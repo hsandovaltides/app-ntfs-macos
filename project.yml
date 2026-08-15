@@ -1,0 +1,93 @@
+name: AppNTFS
+options:
+  bundleIdPrefix: com.appntfs
+  deploymentTarget:
+    macOS: "15.0"
+
+settings:
+  base:
+    # Personal Team (arquitectura@tides.cl). Both AppNTFS and AppNTFSHelper
+    # must sign with the same Team ID for SMAppService/XPC code-signature
+    # validation (see AppNTFSHelper/HelperListenerDelegate.swift) to succeed.
+    # If you switch Apple ID/team, update this and re-run `xcodegen generate`.
+    DEVELOPMENT_TEAM: "4AKKTNTXC4"
+
+packages:
+  AppNTFSKit:
+    path: AppNTFSKit
+
+targets:
+  AppNTFSHelper:
+    type: tool
+    platform: macOS
+    sources:
+      - AppNTFSHelper
+      - AppNTFSHelperProtocol
+    dependencies:
+      - package: AppNTFSKit
+        product: AppNTFSKit
+    # `type: tool` produces a bare executable (no .app bundle), so Xcode
+    # never runs the normal "Process Info.plist" build phase that resolves
+    # $(BUILD_SETTING) placeholders — confirmed by inspecting the built
+    # binary's __TEXT,__info_plist section, which was entirely absent. Info
+    # .plist has to be substituted by hand and linked in directly.
+    preBuildScripts:
+      - name: Embed Info.plist
+        script: |
+          set -e
+          mkdir -p "${DERIVED_FILE_DIR}"
+          sed \
+            -e "s#\$(PRODUCT_BUNDLE_IDENTIFIER)#${PRODUCT_BUNDLE_IDENTIFIER}#g" \
+            -e "s#\$(CURRENT_PROJECT_VERSION)#${CURRENT_PROJECT_VERSION}#g" \
+            -e "s#\$(MARKETING_VERSION)#${MARKETING_VERSION}#g" \
+            -e "s#\$(DEVELOPMENT_TEAM)#${DEVELOPMENT_TEAM}#g" \
+            "${SRCROOT}/AppNTFSHelper/Info.plist" > "${DERIVED_FILE_DIR}/Info.plist"
+        outputFiles:
+          - $(DERIVED_FILE_DIR)/Info.plist
+    settings:
+      base:
+        PRODUCT_NAME: AppNTFSHelper
+        PRODUCT_BUNDLE_IDENTIFIER: com.appntfs.app.helper
+        SWIFT_VERSION: "6.0"
+        MACOSX_DEPLOYMENT_TARGET: "15.0"
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_STYLE: Automatic
+        SKIP_INSTALL: YES
+        OTHER_LDFLAGS: $(inherited) -sectcreate __TEXT __info_plist $(DERIVED_FILE_DIR)/Info.plist
+
+  AppNTFS:
+    type: application
+    platform: macOS
+    sources:
+      - path: AppNTFS
+        excludes:
+          - "Info.plist"
+          - "AppNTFS.entitlements"
+          - "LaunchDaemons"
+      - path: AppNTFS/LaunchDaemons/com.appntfs.app.helper.plist
+        buildPhase:
+          copyFiles:
+            destination: wrapper
+            subpath: Contents/Library/LaunchDaemons
+      - AppNTFSHelperProtocol
+    dependencies:
+      - package: AppNTFSKit
+        product: AppNTFSKit
+      - target: AppNTFSHelper
+        embed: true
+        codeSign: true
+        copy:
+          destination: executables
+    settings:
+      base:
+        PRODUCT_NAME: AppNTFS
+        PRODUCT_BUNDLE_IDENTIFIER: com.appntfs.app
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "6.0"
+        MACOSX_DEPLOYMENT_TARGET: "15.0"
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_STYLE: Automatic
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: AppNTFS/Info.plist
+        CODE_SIGN_ENTITLEMENTS: AppNTFS/AppNTFS.entitlements
