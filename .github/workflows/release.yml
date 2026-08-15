@@ -1,0 +1,113 @@
+name: Release
+
+# Every push to main (i.e. every merged PR) builds AppNTFS, tags the repo
+# with the next patch version, and publishes a GitHub Release with the
+# zipped .app attached. See README's "Distribución" section for the
+# code-signing caveats — this pipeline uses a free/personal-team certificate
+# (no Developer ID, no notarization), so first-run Gatekeeper approval is
+# still manual for whoever installs it.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Determine next version
+        id: version
+        run: |
+          git fetch --tags --force
+          latest="$(git tag -l 'v*' | sort -V | tail -n1)"
+          if [ -z "${latest}" ]; then
+            next="v0.1.0"
+          else
+            IFS='.' read -r major minor patch <<< "${latest#v}"
+            next="v${major}.${minor}.$((patch + 1))"
+          fi
+          echo "version=${next}" >> "$GITHUB_OUTPUT"
+          echo "plainVersion=${next#v}" >> "$GITHUB_OUTPUT"
+          echo "Next version: ${next}"
+
+      - name: Import signing certificate
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          if [ -z "${MACOS_CERTIFICATE_P12}" ]; then
+            echo "::error::Missing MACOS_CERTIFICATE_P12 secret — export your signing certificate (see README's 'Distribución' section) and add it, MACOS_CERTIFICATE_PASSWORD and KEYCHAIN_PASSWORD as repo secrets."
+            exit 1
+          fi
+          echo "${MACOS_CERTIFICATE_P12}" | base64 --decode > "${RUNNER_TEMP}/certificate.p12"
+          security create-keychain -p "${KEYCHAIN_PASSWORD}" build.keychain
+          security set-keychain-settings -lut 21600 build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "${KEYCHAIN_PASSWORD}" build.keychain
+          security import "${RUNNER_TEMP}/certificate.p12" -k build.keychain \
+            -P "${MACOS_CERTIFICATE_PASSWORD}" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "${KEYCHAIN_PASSWORD}" build.keychain
+          rm -f "${RUNNER_TEMP}/certificate.p12"
+
+      - name: Build (unsigned)
+        run: |
+          xcodebuild \
+            -project AppNTFS.xcodeproj \
+            -scheme AppNTFS \
+            -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            MARKETING_VERSION="${{ steps.version.outputs.plainVersion }}" \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
+            build
+
+      - name: Sign app and helper
+        env:
+          SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+        run: |
+          if [ -z "${SIGNING_IDENTITY}" ]; then
+            echo "::error::Missing MACOS_SIGNING_IDENTITY secret — the exact certificate name, e.g. 'Apple Development: you@example.com (TEAMID)'. Find it with: security find-identity -v -p codesigning"
+            exit 1
+          fi
+          APP="build/Build/Products/Release/AppNTFS.app"
+          # Inner-to-outer: the helper tool has to be signed before the app
+          # bundle that embeds it (see AppNTFSHelper/HelperListenerDelegate's
+          # code-signature check — this signature is what it validates).
+          codesign --force --options runtime --timestamp \
+            --sign "${SIGNING_IDENTITY}" \
+            "${APP}/Contents/MacOS/AppNTFSHelper"
+          codesign --force --options runtime --timestamp \
+            --sign "${SIGNING_IDENTITY}" \
+            "${APP}"
+          codesign --verify --deep --strict --verbose=2 "${APP}"
+
+      - name: Package
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent \
+            "build/Build/Products/Release/AppNTFS.app" \
+            AppNTFS.zip
+
+      - name: Tag and publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git tag "${VERSION}"
+          git push origin "${VERSION}"
+          gh release create "${VERSION}" AppNTFS.zip \
+            --title "AppNTFS ${VERSION}" \
+            --notes "⚠️ Build sin notarizar (cuenta de desarrollador gratuita, sin Developer ID). Al abrirlo por primera vez macOS puede avisar que es de un desarrollador no identificado — clic derecho → Abrir, o \`xattr -dr com.apple.quarantine AppNTFS.app\` después de descomprimir."

@@ -248,8 +248,65 @@ Checklist de hardware real — todo confirmado funcionando:
 - ✅ Múltiples particiones NTFS en el mismo disco físico, detectadas y
   remontadas cada una de forma independiente — ver
   `dev-tools/make-ntfs-fixture-multi.sh` para reproducir sin hardware real.
-- Distribución fuera del Mac App Store: la app no está sandboxed (necesario
-  para invocar `diskutil`/`ntfs-3g`), así que para repartirla hace falta
-  firma Developer ID + notarización (`notarytool submit` + `stapler staple`)
-  con una cuenta de desarrollador Apple propia — el helper privilegiado
-  también debe quedar firmado y notarizado igual que la app.
+- La app no está sandboxed (necesario para invocar `diskutil`/`ntfs-3g`).
+  Sin una cuenta de Apple Developer Program paga no hay Developer ID ni
+  notarización posibles — el release automático (ver "Distribución" abajo)
+  firma con el Team ID gratuito, así que Gatekeeper va a advertir
+  "desarrollador no identificado" la primera vez que alguien la abra.
+
+## Distribución
+
+`.github/workflows/release.yml` compila, firma, tagea y publica un
+[GitHub Release](https://github.com/hermessandoval/app-ntfs-macos/releases)
+con el `.zip` de `AppNTFS.app` en cada push a `main` (o sea, en cada PR
+mergeado) — el tag es un patch-bump automático sobre el último `vX.Y.Z`
+existente (`v0.1.0` si todavía no hay ninguno).
+
+Como no hay Developer ID, la firma usa el certificado "Apple Development"
+de una cuenta personal/gratuita (el mismo Team ID que ya está en
+`project.yml`) importado desde secrets — Xcode no puede auto-gestionar el
+signing en CI sin una sesión de Apple ID, así que el workflow compila sin
+firma y firma después a mano con `codesign` directo (primero el helper,
+después la app, igual que exige la validación de firma en
+`AppNTFSHelper/HelperListenerDelegate`).
+
+### Configurar los secrets (una sola vez)
+
+1. Exportá tu certificado de firma desde Keychain Access: buscá
+   "Apple Development: ..." en la categoría "My Certificates", clic derecho
+   → Exportar → formato `.p12`, con una contraseña.
+2. Codificalo en base64:
+   ```sh
+   base64 -i Certificados.p12 | pbcopy
+   ```
+3. Encontrá el nombre exacto del certificado:
+   ```sh
+   security find-identity -v -p codesigning
+   ```
+   (algo como `Apple Development: tu@email.com (4AKKTNTXC4)`).
+4. En GitHub → Settings → Secrets and variables → Actions, agregá:
+   - `MACOS_CERTIFICATE_P12` — el base64 del paso 2.
+   - `MACOS_CERTIFICATE_PASSWORD` — la contraseña que le pusiste al `.p12`.
+   - `KEYCHAIN_PASSWORD` — cualquier contraseña nueva, solo la usa el
+     keychain temporal de CI.
+   - `MACOS_SIGNING_IDENTITY` — el nombre exacto del paso 3.
+
+Si más adelante sacás una cuenta de Developer Program paga, el reemplazo es
+sencillo: cambiar `DEVELOPMENT_TEAM` en `project.yml`, repetir estos pasos
+con el certificado "Developer ID Application" nuevo, y agregar un paso de
+`notarytool submit --wait` + `stapler staple` después de firmar.
+
+## Instalar vía Homebrew
+
+Este mismo repo funciona como tap (no hace falta uno separado):
+
+```sh
+brew tap hermessandoval/app-ntfs-macos https://github.com/hermessandoval/app-ntfs-macos.git
+brew install --cask appntfs
+```
+
+El cask (`Casks/appntfs.rb`) apunta siempre al último release y le saca el
+atributo de cuarentena automáticamente (la app sigue firmada, solo no está
+notarizada — ver "Distribución" arriba). Instala `macfuse` como dependencia
+del cask; `ntfs-3g-mac` no está en homebrew-core y hay que instalarlo aparte
+(el cask lo indica en los "caveats" al instalar).
