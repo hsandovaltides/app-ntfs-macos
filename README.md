@@ -257,7 +257,7 @@ Checklist de hardware real — todo confirmado funcionando:
 ## Distribución
 
 `.github/workflows/release.yml` compila, firma, tagea y publica un
-[GitHub Release](https://github.com/hermessandoval/app-ntfs-macos/releases)
+[GitHub Release](https://github.com/hsandovaltides/app-ntfs-macos/releases)
 con el `.zip` de `AppNTFS.app` en cada push a `main` (o sea, en cada PR
 mergeado) — el tag es un patch-bump automático sobre el último `vX.Y.Z`
 existente (`v0.1.0` si todavía no hay ninguno).
@@ -301,7 +301,7 @@ con el certificado "Developer ID Application" nuevo, y agregar un paso de
 Este mismo repo funciona como tap (no hace falta uno separado):
 
 ```sh
-brew tap hermessandoval/app-ntfs-macos https://github.com/hermessandoval/app-ntfs-macos.git
+brew tap hsandovaltides/app-ntfs-macos https://github.com/hsandovaltides/app-ntfs-macos.git
 brew install --cask appntfs
 ```
 

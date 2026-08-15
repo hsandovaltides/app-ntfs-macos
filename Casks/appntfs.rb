@@ -2,10 +2,10 @@ cask "appntfs" do
   version :latest
   sha256 :no_check
 
-  url "https://github.com/hermessandoval/app-ntfs-macos/releases/latest/download/AppNTFS.zip"
+  url "https://github.com/hsandovaltides/app-ntfs-macos/releases/latest/download/AppNTFS.zip"
   name "AppNTFS"
   desc "Menu bar app that auto-remounts NTFS drives read-write on macOS"
-  homepage "https://github.com/hermessandoval/app-ntfs-macos"
+  homepage "https://github.com/hsandovaltides/app-ntfs-macos"
 
   depends_on cask: "macfuse"
 
