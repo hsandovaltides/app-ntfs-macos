@@ -172,9 +172,12 @@ final class AppCoordinator {
         }
     }
 
-    var launchAtLoginEnabled: Bool {
-        SMAppService.mainApp.status == .enabled
-    }
+    /// A stored snapshot, not a computed read of `SMAppService.mainApp.status`
+    /// — @Observable only tracks changes to stored properties, so a Toggle
+    /// bound to a live system-state read never sees a reason to re-render
+    /// after `setLaunchAtLogin` runs (confirmed: the toggle looked
+    /// completely unresponsive even though registration itself was fine).
+    private(set) var launchAtLoginEnabled = SMAppService.mainApp.status == .enabled
 
     func setLaunchAtLogin(_ enabled: Bool) {
         do {
@@ -183,6 +186,7 @@ final class AppCoordinator {
             } else {
                 try SMAppService.mainApp.unregister()
             }
+            launchAtLoginEnabled = enabled
         } catch {
             logger.error("Could not change login item registration: \(error)")
         }
