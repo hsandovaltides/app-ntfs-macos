@@ -24,6 +24,31 @@ private final class MountNotificationDelegate: NSObject, UNUserNotificationCente
     }
 }
 
+/// Top-level (file-scope) functions, not methods on `AppCoordinator` — a
+/// closure/method written lexically inside a @MainActor type gets inferred
+/// as MainActor-isolated even when it only captures Sendable values, but
+/// UNUserNotificationCenter always calls its completion handlers back on
+/// its own background queue. That mismatch crashes at runtime with SIGTRAP
+/// (confirmed via a real crash report from a release build —
+/// `dispatch_assert_queue_fail` / `swift_task_checkIsolatedSwift` inside
+/// "closure #1 in AppCoordinator.start()"). Top-level functions have no
+/// enclosing actor context at all, so there's nothing to infer — and using
+/// `AppLogger.shared` directly avoids needing to capture `self` (which
+/// isn't `Sendable`) to reach the instance's `logger` property.
+private func handleNotificationAuthorization(granted: Bool, error: Error?) {
+    if let error {
+        AppLogger.shared.warning("Notification authorization request failed: \(error)")
+    } else if !granted {
+        AppLogger.shared.info("Notifications not authorized by the user")
+    }
+}
+
+private func handleNotificationPosted(_ error: Error?) {
+    if let error {
+        AppLogger.shared.warning("Failed to post notification: \(error)")
+    }
+}
+
 @MainActor
 @Observable
 final class AppCoordinator {
@@ -65,13 +90,10 @@ final class AppCoordinator {
     func start() {
         loadPersistedPreferences()
         UNUserNotificationCenter.current().delegate = notificationDelegate
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { [logger] granted, error in
-            if let error {
-                logger.warning("Notification authorization request failed: \(error)")
-            } else if !granted {
-                logger.info("Notifications not authorized by the user")
-            }
-        }
+        UNUserNotificationCenter.current().requestAuthorization(
+            options: [.alert, .sound],
+            completionHandler: handleNotificationAuthorization
+        )
         installHelperIfNeeded()
         Task { await recheckDependencies() }
         diskWatcher.start()
@@ -222,11 +244,7 @@ final class AppCoordinator {
         content.title = title
         content.body = body
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request) { [logger] error in
-            if let error {
-                logger.warning("Failed to post notification: \(error)")
-            }
-        }
+        UNUserNotificationCenter.current().add(request, withCompletionHandler: handleNotificationPosted)
     }
 
     private func upsert(_ volume: NTFSVolume) {
