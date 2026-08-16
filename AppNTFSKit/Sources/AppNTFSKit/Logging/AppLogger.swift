@@ -51,6 +51,10 @@ public final class AppLogger: @unchecked Sendable {
         record(.error, message)
     }
 
+    public func clear() {
+        bufferQueue.sync { buffer.removeAll() }
+    }
+
     private func record(_ level: LogEntry.Level, _ message: String) {
         let entry = LogEntry(level: level, message: message)
         bufferQueue.sync {

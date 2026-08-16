@@ -17,8 +17,10 @@ struct MenuBarContentView: View {
             ForEach(coordinator.volumes) { volume in
                 VolumeRowView(
                     volume: volume,
+                    isIgnored: coordinator.isIgnored(volume),
                     onRetry: { coordinator.retryMount(volume) },
-                    onEject: { coordinator.eject(volume) }
+                    onEject: { coordinator.eject(volume) },
+                    onToggleIgnored: { coordinator.setIgnored(!coordinator.isIgnored(volume), for: volume) }
                 )
             }
         }

@@ -16,6 +16,14 @@ struct LogsView: View {
             }
         }
         .frame(minWidth: 420, minHeight: 300)
+        .toolbar {
+            ToolbarItem {
+                Button("Limpiar registros") {
+                    coordinator.logger.clear()
+                    entries = []
+                }
+            }
+        }
         .task {
             // Polling rather than wiring AppLogger into Observation: it's a
             // debug-only view, so a 1s refresh is simple and cheap enough.
