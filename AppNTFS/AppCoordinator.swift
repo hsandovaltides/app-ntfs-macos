@@ -148,6 +148,16 @@ final class AppCoordinator {
         }
     }
 
+    /// The "Reparar y reintentar" action — explicit, one click, only ever
+    /// user-initiated (see `MountManager.fixAndRemount`'s doc comment for
+    /// why this is never automatic).
+    func fixAndRetryMount(_ volume: NTFSVolume) {
+        Task {
+            let result = await mountManager.fixAndRemount(volume)
+            apply(result, to: volume)
+        }
+    }
+
     func eject(_ volume: NTFSVolume) {
         Task {
             _ = try? await ProcessRunner().run(
@@ -221,10 +231,10 @@ final class AppCoordinator {
             notify(title: mounted.volumeName, body: "Montado en lectura/escritura.")
         case .failure(let error):
             var updated = volume
-            updated.mountState = .error(Self.describe(error))
+            updated.mountState = .error(error)
             upsert(updated)
             if Self.isNotifiable(error) {
-                notify(title: volume.volumeName, body: Self.describe(error))
+                notify(title: volume.volumeName, body: error.description)
             }
         }
     }
@@ -259,20 +269,4 @@ final class AppCoordinator {
         }
     }
 
-    private static func describe(_ error: MountError) -> String {
-        switch error {
-        case .dependenciesNotReady:
-            return "Faltan dependencias (macFUSE/ntfs-3g)"
-        case .volumeDirty:
-            return "Hibernación de Windows detectada — no se remonta en escritura"
-        case .unmountFailed(let detail):
-            return "No se pudo desmontar: \(detail)"
-        case .mountFailed(let detail):
-            return "No se pudo montar en escritura: \(detail)"
-        case .mountFailedAndFallbackFailed:
-            return "Error crítico: el volumen podría no estar accesible"
-        case .operationAlreadyInProgress:
-            return "Operación en curso"
-        }
-    }
 }

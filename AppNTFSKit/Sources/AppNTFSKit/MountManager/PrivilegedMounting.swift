@@ -24,4 +24,14 @@ public protocol PrivilegedMounting: Sendable {
         mountPath: String,
         options: String
     ) async throws -> ProcessResult
+
+    /// Runs `ntfsfix` to clear the Windows dirty/hibernation flag. Only ever
+    /// invoked for the explicit, user-initiated "Reparar y reintentar" action
+    /// (see `MountManager.fixAndRemount`) — never automatically, since
+    /// blindly clearing the flag could mask genuine filesystem corruption
+    /// rather than a normal Windows suspend/hibernate.
+    func fix(
+        ntfsfixExecutablePath: String,
+        devicePath: String
+    ) async throws -> ProcessResult
 }

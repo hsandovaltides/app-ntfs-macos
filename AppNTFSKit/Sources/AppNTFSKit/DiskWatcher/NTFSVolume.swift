@@ -5,7 +5,12 @@ public struct NTFSVolume: Sendable, Identifiable, Equatable {
         case readOnly
         case mounting
         case readWrite
-        case error(String)
+        /// Carries the structured `MountError`, not a pre-formatted string —
+        /// callers (the UI, mainly) need to distinguish *which* error this
+        /// is, e.g. to offer a "Reparar y reintentar" action specifically
+        /// for `.volumeDirty`. Use `MountError.localizedDescription` (or
+        /// just `error.localizedDescription`) to render it.
+        case error(MountError)
     }
 
     public var id: String { bsdName }

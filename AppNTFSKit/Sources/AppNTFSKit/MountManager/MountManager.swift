@@ -65,6 +65,23 @@ public actor MountManager {
 
     @discardableResult
     public func attemptRemount(_ volume: NTFSVolume) async -> Result<NTFSVolume, MountError> {
+        await attemptRemount(volume, repairDirtyFlag: false)
+    }
+
+    /// Runs `ntfsfix` to clear the Windows dirty/hibernation flag, then
+    /// attempts the normal read-write remount — the explicit,
+    /// user-initiated counterpart to `attemptRemount` for the
+    /// "Reparar y reintentar" UI action on a volume that previously failed
+    /// with `.volumeDirty`. Deliberately never invoked automatically: a
+    /// dirty flag can also mean genuine filesystem corruption rather than a
+    /// normal Windows suspend/hibernate, so clearing it blind isn't safe as
+    /// a default behavior — only as something the user explicitly asks for.
+    @discardableResult
+    public func fixAndRemount(_ volume: NTFSVolume) async -> Result<NTFSVolume, MountError> {
+        await attemptRemount(volume, repairDirtyFlag: true)
+    }
+
+    private func attemptRemount(_ volume: NTFSVolume, repairDirtyFlag: Bool) async -> Result<NTFSVolume, MountError> {
         guard !inFlight.contains(volume.bsdName) else {
             return .failure(.operationAlreadyInProgress)
         }
@@ -88,15 +105,15 @@ public actor MountManager {
         let ntfs3g = Ntfs3gCommand(runner: runner, homebrewPrefix: homebrewPrefix)
         let mounter = privilegedMounter ?? ntfs3g
 
-        // Unmount before probing, not after: ntfs-3g.probe needs exclusive
-        // access to the raw device and fails with "Resource busy" on
-        // anything currently mounted — even our own native read-only mount,
-        // even as root. That busy failure looks identical to a real dirty
-        // flag from the probe's exit code alone, which previously produced
-        // false "Hibernación de Windows" reports on a genuinely clean volume
-        // (confirmed on real hardware: a manual unmount-then-probe reported
-        // clean while probe-before-unmount reported dirty for the same
-        // device back to back).
+        // Unmount before probing, not after: ntfs-3g.probe (and ntfsfix)
+        // need exclusive access to the raw device and fail with "Resource
+        // busy" on anything currently mounted — even our own native
+        // read-only mount, even as root. That busy failure looks identical
+        // to a real dirty flag from the probe's exit code alone, which
+        // previously produced false "Hibernación de Windows" reports on a
+        // genuinely clean volume (confirmed on real hardware: a manual
+        // unmount-then-probe reported clean while probe-before-unmount
+        // reported dirty for the same device back to back).
         do {
             let unmountResult = try await diskUtil.unmount(mountPath: volume.mountPath)
             guard unmountResult.succeeded else {
@@ -106,6 +123,25 @@ public actor MountManager {
         } catch {
             logger.error("diskutil unmount threw for \(volume.bsdName): \(error)")
             return .failure(.unmountFailed("\(error)"))
+        }
+
+        if repairDirtyFlag {
+            do {
+                let fixResult = try await mounter.fix(
+                    ntfsfixExecutablePath: ntfs3g.fixExecutablePath,
+                    devicePath: volume.rawDevicePath
+                )
+                guard fixResult.succeeded else {
+                    logger.error("ntfsfix failed for \(volume.bsdName): \(fixResult.standardError) — falling back to read-only")
+                    await restoreReadOnly(volume)
+                    return .failure(.mountFailed(fixResult.standardError))
+                }
+                logger.info("ntfsfix cleared the dirty/hibernation flag for \(volume.bsdName)")
+            } catch {
+                logger.error("ntfsfix threw for \(volume.bsdName): \(error) — falling back to read-only")
+                await restoreReadOnly(volume)
+                return .failure(.mountFailed("\(error)"))
+            }
         }
 
         do {

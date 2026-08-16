@@ -19,6 +19,7 @@ struct MenuBarContentView: View {
                     volume: volume,
                     isIgnored: coordinator.isIgnored(volume),
                     onRetry: { coordinator.retryMount(volume) },
+                    onFixAndRetry: { coordinator.fixAndRetryMount(volume) },
                     onEject: { coordinator.eject(volume) },
                     onToggleIgnored: { coordinator.setIgnored(!coordinator.isIgnored(volume), for: volume) }
                 )
