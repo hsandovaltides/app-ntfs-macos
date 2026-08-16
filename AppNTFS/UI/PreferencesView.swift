@@ -11,8 +11,25 @@ struct PreferencesView: View {
                 get: { coordinator.launchAtLoginEnabled },
                 set: { coordinator.setLaunchAtLogin($0) }
             ))
+
+            Section {
+                Text(Self.versionString)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding()
         .frame(width: 380)
+    }
+
+    /// Reads from the bundle's Info.plist (populated from `MARKETING_VERSION`
+    /// / `CURRENT_PROJECT_VERSION` at build time — the release workflow sets
+    /// these per tag) rather than hardcoding a version here, so this can't
+    /// drift out of sync with what actually got built.
+    private static var versionString: String {
+        let info = Bundle.main.infoDictionary
+        let shortVersion = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let buildNumber = info?["CFBundleVersion"] as? String ?? "?"
+        return "AppNTFS \(shortVersion) (\(buildNumber))"
     }
 }
