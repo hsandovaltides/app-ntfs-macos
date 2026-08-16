@@ -4,8 +4,10 @@ import SwiftUI
 
 struct VolumeRowView: View {
     let volume: NTFSVolume
+    let isIgnored: Bool
     let onRetry: () -> Void
     let onEject: () -> Void
+    let onToggleIgnored: () -> Void
 
     var body: some View {
         HStack {
@@ -23,6 +25,8 @@ struct VolumeRowView: View {
                 NSWorkspace.shared.open(URL(fileURLWithPath: volume.mountPath))
             }
             Button("Expulsar", action: onEject)
+            Button(isIgnored ? "Dejar de ignorar" : "Ignorar", action: onToggleIgnored)
+                .disabled(volume.volumeUUID == nil)
         }
     }
 
@@ -36,11 +40,13 @@ struct VolumeRowView: View {
     }
 
     private var stateLabel: String {
+        let base: String
         switch volume.mountState {
-        case .readOnly: return "Solo lectura"
-        case .mounting: return "Montando…"
-        case .readWrite: return "Lectura/escritura"
-        case .error(let message): return message
+        case .readOnly: base = "Solo lectura"
+        case .mounting: base = "Montando…"
+        case .readWrite: base = "Lectura/escritura"
+        case .error(let message): base = message
         }
+        return isIgnored ? "\(base) — ignorado" : base
     }
 }
