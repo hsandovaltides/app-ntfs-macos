@@ -29,6 +29,16 @@ public let expectedAppBundleIdentifier = "com.appntfs.app"
         reply: @escaping @Sendable (HelperOperationResult) -> Void
     )
 
+    /// Clears the Windows dirty/hibernation flag via `ntfsfix`. Only ever
+    /// invoked for the explicit "Reparar y reintentar" UI action — see
+    /// `MountManager.fixAndRemount`'s doc comment for why this is never
+    /// triggered automatically.
+    func fix(
+        ntfsfixExecutablePath: String,
+        devicePath: String,
+        reply: @escaping @Sendable (HelperOperationResult) -> Void
+    )
+
     /// Full Disk Access is granted per-binary by the user in System Settings
     /// and can't be queried from any public API, so this asks the helper to
     /// try the one thing that actually needs it: opening a raw disk device.
@@ -97,6 +107,12 @@ public enum AppNTFSHelperXPC {
         interface.setClasses(
             resultClasses,
             for: #selector(AppNTFSHelperProtocol.mountReadWrite(ntfs3gExecutablePath:devicePath:mountPath:options:reply:)),
+            argumentIndex: 0,
+            ofReply: true
+        )
+        interface.setClasses(
+            resultClasses,
+            for: #selector(AppNTFSHelperProtocol.fix(ntfsfixExecutablePath:devicePath:reply:)),
             argumentIndex: 0,
             ofReply: true
         )

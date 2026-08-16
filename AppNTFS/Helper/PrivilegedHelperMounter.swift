@@ -18,6 +18,15 @@ final class PrivilegedHelperMounter: PrivilegedMounting, FullDiskAccessProbing, 
         return result.exitCode == 0
     }
 
+    func fix(ntfsfixExecutablePath: String, devicePath: String) async throws -> ProcessResult {
+        let result = try await withHelperProxy { proxy, resumeGuard, continuation in
+            proxy.fix(ntfsfixExecutablePath: ntfsfixExecutablePath, devicePath: devicePath) { result in
+                resumeGuard.resumeOnce { continuation.resume(returning: result) }
+            }
+        }
+        return ProcessResult(exitCode: result.exitCode, standardOutput: result.standardOutput, standardError: result.standardError)
+    }
+
     /// `false` on any failure (connection drop, helper not approved yet,
     /// etc.) rather than throwing — a transient XPC hiccup here shouldn't
     /// itself surface as a Full Disk Access warning to the user; those

@@ -70,6 +70,25 @@ final class HelperService: NSObject, AppNTFSHelperProtocol, @unchecked Sendable 
         }
     }
 
+    func fix(
+        ntfsfixExecutablePath: String,
+        devicePath: String,
+        reply: @escaping @Sendable (HelperOperationResult) -> Void
+    ) {
+        Task {
+            do {
+                let result = try await runner.run(executable: ntfsfixExecutablePath, arguments: [devicePath])
+                reply(HelperOperationResult(
+                    exitCode: result.exitCode,
+                    standardOutput: result.standardOutput,
+                    standardError: result.standardError
+                ))
+            } catch {
+                reply(HelperOperationResult(exitCode: -1, standardOutput: "", standardError: "\(error)"))
+            }
+        }
+    }
+
     /// Raw disk device nodes are gated by the Full Disk Access TCC
     /// permission independent of root — confirmed on real hardware, a fresh
     /// helper running as root still got `EPERM` ("Operation not permitted")

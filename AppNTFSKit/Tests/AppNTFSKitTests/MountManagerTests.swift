@@ -6,6 +6,7 @@ struct MountManagerTests {
     private static let homebrewPrefix = "/opt/homebrew"
     private static let ntfs3gBin = "\(homebrewPrefix)/opt/ntfs-3g-mac/bin/ntfs-3g"
     private static let ntfs3gProbe = "\(homebrewPrefix)/opt/ntfs-3g-mac/bin/ntfs-3g.probe"
+    private static let ntfsfix = "\(homebrewPrefix)/opt/ntfs-3g-mac/bin/ntfsfix"
     private static let diskutil = "/usr/sbin/diskutil"
 
     private static let volume = NTFSVolume(
@@ -28,6 +29,7 @@ struct MountManagerTests {
                 exitCode: 0, standardOutput: SampleSystemExtensionsOutput.macFUSEApproved, standardError: ""
             ),
             Self.ntfs3gProbe: ProcessResult(exitCode: 0, standardOutput: "", standardError: ""),
+            Self.ntfsfix: ProcessResult(exitCode: 0, standardOutput: "", standardError: ""),
             Self.diskutil: ProcessResult(exitCode: 0, standardOutput: "", standardError: ""),
             Self.ntfs3gBin: ProcessResult(exitCode: 0, standardOutput: "", standardError: "")
         ]
@@ -139,6 +141,56 @@ struct MountManagerTests {
 
         let probeCallCount = await runner.calls.filter { $0.executable == Self.ntfs3gProbe }.count
         #expect(probeCallCount == 1)
+    }
+
+    @Test("fixAndRemount clears the dirty flag via ntfsfix, then mounts read-write")
+    func fixAndRemountSucceeds() async throws {
+        let runner = readyRunner()
+        let manager = MountManager(
+            runner: runner,
+            dependencyChecker: DependencyChecker(
+                runner: runner,
+                fileSystem: readyFileSystem(),
+                helperStatusProbe: FakeHelperServiceStatusProbe(state: .installedAndApproved)
+            ),
+            logger: AppLogger()
+        )
+
+        let result = await manager.fixAndRemount(Self.volume)
+
+        let mounted = try result.get()
+        #expect(mounted.mountState == .readWrite)
+
+        let executed = await runner.calls.map(\.executable)
+        #expect(executed.contains(Self.ntfsfix))
+        #expect(executed.contains(Self.ntfs3gProbe))
+        #expect(executed.contains(Self.ntfs3gBin))
+    }
+
+    @Test("fixAndRemount falls back to read-only when ntfsfix itself fails")
+    func fixAndRemountFailure() async {
+        let runner = readyRunner(overrides: [
+            Self.ntfsfix: ProcessResult(exitCode: 1, standardOutput: "", standardError: "still broken")
+        ])
+        let manager = MountManager(
+            runner: runner,
+            dependencyChecker: DependencyChecker(
+                runner: runner,
+                fileSystem: readyFileSystem(),
+                helperStatusProbe: FakeHelperServiceStatusProbe(state: .installedAndApproved)
+            ),
+            logger: AppLogger()
+        )
+
+        let result = await manager.fixAndRemount(Self.volume)
+
+        guard case .failure(.mountFailed) = result else {
+            Issue.record("Expected .mountFailed, got \(result)")
+            return
+        }
+        let executed = await runner.calls.map(\.executable)
+        #expect(executed.contains(Self.ntfs3gProbe) == false)
+        #expect(executed.contains(Self.ntfs3gBin) == false)
     }
 
     @Test("Falls back to a native read-only remount when mount_ntfs-3g fails")

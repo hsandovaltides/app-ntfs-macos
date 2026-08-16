@@ -19,6 +19,7 @@ struct Ntfs3gCommand: PrivilegedMounting {
 
     var executablePath: String { "\(binDirectory)/ntfs-3g" }
     var probeExecutablePath: String { "\(binDirectory)/ntfs-3g.probe" }
+    var fixExecutablePath: String { "\(binDirectory)/ntfsfix" }
 
     /// Uses macFUSE's classic kext backend (the default when `backend=fskit`
     /// is omitted). FSKit was tried first to avoid the Recovery Mode "reduced
@@ -63,8 +64,11 @@ struct Ntfs3gCommand: PrivilegedMounting {
         try await runner.run(executable: ntfs3gExecutablePath, arguments: [devicePath, mountPath, "-o", options])
     }
 
-    @discardableResult
-    func fix(devicePath: String) async throws -> ProcessResult {
-        try await runner.run(executable: "\(binDirectory)/ntfsfix", arguments: [devicePath])
+    /// `PrivilegedMounting` conformance used only when no privileged helper is
+    /// configured (unit tests, mainly) — real fixes always go through
+    /// `PrivilegedHelperMounter` (AppNTFS/Helper/), same reasoning as
+    /// `probeReadWrite`/`mountReadWrite`.
+    func fix(ntfsfixExecutablePath: String, devicePath: String) async throws -> ProcessResult {
+        try await runner.run(executable: ntfsfixExecutablePath, arguments: [devicePath])
     }
 }
