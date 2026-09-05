@@ -17,8 +17,9 @@ public struct DependencyStatus: Sendable, Equatable {
     /// on real hardware: `EPERM` opening `/dev/rdiskN` from the root helper
     /// until its exact path was added to Privacy & Security → Full Disk
     /// Access). Defaults to `true` when unset/unchecked (e.g. no
-    /// `FullDiskAccessProbing` wired in, as in tests) rather than blocking
-    /// on a check that couldn't run.
+    /// `FullDiskAccessProbing` wired in, as in tests; or the helper not yet
+    /// approved, so there's nothing to ask) rather than blocking on a check
+    /// that couldn't run.
     public let fullDiskAccessGranted: Bool
 
     public var isReady: Bool {
@@ -128,13 +129,25 @@ public struct DependencyChecker: Sendable {
 
     public func checkAll() async -> DependencyStatus {
         let prefix = homebrewPrefix()
+        let helperState = helperStatusProbe.status(forPlistName: Self.helperLaunchDaemonPlistName)
         return DependencyStatus(
             homebrewPrefix: prefix,
             ntfs3gInstalled: ntfs3gIsInstalled(homebrewPrefix: prefix),
             macFUSEState: await macFUSEInstallState(homebrewPrefix: prefix),
-            helperState: helperStatusProbe.status(forPlistName: Self.helperLaunchDaemonPlistName),
-            fullDiskAccessGranted: await fullDiskAccessProbe?.hasFullDiskAccess() ?? true
+            helperState: helperState,
+            fullDiskAccessGranted: await fullDiskAccessGranted(helperState: helperState)
         )
+    }
+
+    /// The FDA probe works by asking the helper to open a raw disk device, so
+    /// it's only meaningful once the helper is installed and approved. Before
+    /// that, the call is guaranteed to fail for an unrelated reason (no
+    /// approved daemon to answer) — treating that as "FDA missing" would show
+    /// a spurious banner on top of the "approve the helper" one. `true` here
+    /// just defers the check; `helperState` already gates readiness.
+    private func fullDiskAccessGranted(helperState: InstallState) async -> Bool {
+        guard let fullDiskAccessProbe, helperState == .installedAndApproved else { return true }
+        return await fullDiskAccessProbe.hasFullDiskAccess()
     }
 
     func homebrewPrefix() -> String? {

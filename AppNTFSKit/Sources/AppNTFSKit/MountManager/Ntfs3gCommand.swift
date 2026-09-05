@@ -34,7 +34,26 @@ struct Ntfs3gCommand: PrivilegedMounting {
     /// intentionally omitted — the mount is only ever accessed by the
     /// logged-in user anyway.
     func mountOptions(volumeName: String) -> String {
-        "volname=\(volumeName),windows_names,auto_xattr,local_lockfile"
+        var options = ["windows_names", "auto_xattr", "local_lockfile"]
+        let sanitized = Self.sanitizedVolumeName(volumeName)
+        if !sanitized.isEmpty {
+            options.insert("volname=\(sanitized)", at: 0)
+        }
+        return options.joined(separator: ",")
+    }
+
+    /// `ntfs-3g` parses `-o` as a comma-separated list, so a comma in the
+    /// volume label would split into bogus (potentially privilege-widening)
+    /// options; newlines / control characters have no place in a mount option
+    /// either. `volname` only sets the Finder display name, so dropping those
+    /// characters is a harmless cosmetic scrub — and the privileged helper
+    /// rejects anything that slips through regardless (see
+    /// `HelperRequestValidation`).
+    static func sanitizedVolumeName(_ name: String) -> String {
+        let disallowed = CharacterSet(charactersIn: ",")
+            .union(.controlCharacters)
+            .union(.newlines)
+        return String(String.UnicodeScalarView(name.unicodeScalars.filter { !disallowed.contains($0) }))
     }
 
     /// `PrivilegedMounting` conformance used only when no privileged helper is

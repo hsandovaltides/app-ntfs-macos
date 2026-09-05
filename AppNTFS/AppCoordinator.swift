@@ -138,11 +138,28 @@ final class AppCoordinator {
     }
 
     func recheckDependencies() async {
+        let wasReady = dependencyStatus?.isReady ?? false
         dependencyStatus = await dependencyChecker.checkAll()
+
+        // When dependencies just went from missing to ready, drive the
+        // volumes that failed for exactly that reason — otherwise the user
+        // would have to physically replug each drive after installing
+        // macFUSE / approving the helper.
+        guard !wasReady, dependencyStatus?.isReady == true, autoRemountEnabled else { return }
+        for volume in volumes where Self.failedForMissingDependencies(volume) && !isIgnored(volume) {
+            let result = await mountManager.attemptRemount(volume)
+            apply(result, to: volume)
+        }
+    }
+
+    private static func failedForMissingDependencies(_ volume: NTFSVolume) -> Bool {
+        if case .error(.dependenciesNotReady) = volume.mountState { return true }
+        return false
     }
 
     func retryMount(_ volume: NTFSVolume) {
-        Task {
+        Task { [weak self] in
+            guard let self else { return }
             let result = await mountManager.attemptRemount(volume)
             apply(result, to: volume)
         }
@@ -152,7 +169,8 @@ final class AppCoordinator {
     /// user-initiated (see `MountManager.fixAndRemount`'s doc comment for
     /// why this is never automatic).
     func fixAndRetryMount(_ volume: NTFSVolume) {
-        Task {
+        Task { [weak self] in
+            guard let self else { return }
             let result = await mountManager.fixAndRemount(volume)
             apply(result, to: volume)
         }
@@ -200,6 +218,13 @@ final class AppCoordinator {
         } catch {
             logger.error("Could not change login item registration: \(error)")
         }
+    }
+
+    /// Re-syncs the stored snapshot with the real system state — call when a
+    /// view showing the toggle appears, since the user can also change the
+    /// login-item registration directly in System Settings while the app runs.
+    func refreshLaunchAtLoginStatus() {
+        launchAtLoginEnabled = SMAppService.mainApp.status == .enabled
     }
 
     private func handle(_ event: DiskEvent) async {

@@ -20,6 +20,7 @@ struct PreferencesView: View {
         }
         .padding()
         .frame(width: 380)
+        .onAppear { coordinator.refreshLaunchAtLoginStatus() }
     }
 
     /// Reads from the bundle's Info.plist (populated from `MARKETING_VERSION`

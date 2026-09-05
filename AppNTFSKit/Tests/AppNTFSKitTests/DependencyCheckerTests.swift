@@ -104,6 +104,20 @@ struct DependencyCheckerTests {
         #expect(status.isReady == false)
     }
 
+    @Test("Full Disk Access isn't probed (nor blocks readiness) until the helper is approved")
+    func fullDiskAccessNotProbedBeforeHelperApproval() async {
+        let status = await DependencyChecker(
+            runner: FakeProcessRunner(),
+            fileSystem: FakeFileSystemProbe(),
+            helperStatusProbe: FakeHelperServiceStatusProbe(state: .installedPendingApproval),
+            fullDiskAccessProbe: FakeFullDiskAccessProbe(granted: false)
+        ).checkAll()
+
+        // Probe would say `false`, but with the helper still pending approval
+        // that failure is meaningless — it must not surface as "FDA missing".
+        #expect(status.fullDiskAccessGranted == true)
+    }
+
     @Test("Falls back from /opt/homebrew to /usr/local when only Intel prefix has brew")
     func intelPrefixFallback() async {
         let fileSystem = FakeFileSystemProbe(executablePaths: ["/usr/local/bin/brew"])

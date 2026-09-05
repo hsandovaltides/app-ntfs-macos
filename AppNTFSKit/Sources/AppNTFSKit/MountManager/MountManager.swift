@@ -87,11 +87,12 @@ public actor MountManager {
         }
         inFlight.insert(volume.bsdName)
         defer { inFlight.remove(volume.bsdName) }
-        // Marked up front, not just on success: every path from here on
-        // touches the disk (probe, unmount, restoreReadOnly) and would
-        // otherwise re-trigger this same method via DiskArbitration's
-        // description-changed event. An explicit user "Reintentar" bypasses
-        // this guard entirely since it calls attemptRemount directly.
+        // Marked before the first `await` so a description-changed event that
+        // races in while we're mid-pipeline is suppressed: every path below
+        // the dependency gate touches the disk (probe, unmount,
+        // restoreReadOnly) and would otherwise re-trigger this same method.
+        // An explicit user "Reintentar" bypasses this guard since it calls
+        // attemptRemount directly.
         handledByUs.insert(volume.bsdName)
 
         logger.info("Detected NTFS volume \(volume.volumeName) (\(volume.bsdName))")
@@ -99,6 +100,11 @@ public actor MountManager {
         let status = await dependencyChecker.checkAll()
         guard status.isReady, let homebrewPrefix = status.homebrewPrefix else {
             logger.warning("Dependencies not ready for \(volume.bsdName): \(status)")
+            // Nothing above touched the disk, so un-suppress this volume:
+            // a later retry (a replug, or `AppCoordinator.recheckDependencies`
+            // once the user installs what's missing) should actually run
+            // rather than being silently dropped by the `handledByUs` guard.
+            handledByUs.remove(volume.bsdName)
             return .failure(.dependenciesNotReady(status))
         }
 

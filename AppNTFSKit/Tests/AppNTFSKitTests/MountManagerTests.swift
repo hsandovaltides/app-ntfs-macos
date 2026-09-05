@@ -83,6 +83,35 @@ struct MountManagerTests {
         #expect(await runner.calls.isEmpty)
     }
 
+    @Test("A dependencies-not-ready failure doesn't suppress a later retry")
+    func dependenciesNotReadyDoesNotSuppressRetry() async {
+        let runner = FakeProcessRunner()
+        let manager = MountManager(
+            runner: runner,
+            dependencyChecker: DependencyChecker(
+                runner: runner,
+                fileSystem: FakeFileSystemProbe(),
+                helperStatusProbe: FakeHelperServiceStatusProbe(state: .notInstalled)
+            ),
+            logger: AppLogger()
+        )
+
+        let first = await manager.handle(.appeared(Self.volume))
+        guard case .failure(.dependenciesNotReady) = first else {
+            Issue.record("Expected .dependenciesNotReady, got \(String(describing: first))")
+            return
+        }
+
+        // Unlike a real mount failure, this volume was never added to
+        // `handledByUs` (nothing touched the disk), so a subsequent event
+        // must be allowed to try again rather than returning nil.
+        let second = await manager.handle(.descriptionChanged(Self.volume))
+        guard case .failure(.dependenciesNotReady) = second else {
+            Issue.record("Expected the retry to run and fail again, got \(String(describing: second))")
+            return
+        }
+    }
+
     @Test("Leaves a dirty (Windows-hibernated) volume read-only, restored after probing")
     func dirtyVolumeIsRestoredReadOnly() async {
         let runner = readyRunner(overrides: [
