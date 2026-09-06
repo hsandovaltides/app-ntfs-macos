@@ -18,7 +18,7 @@ actor FakeProcessRunner: ProcessRunning {
         responses[executable] = result
     }
 
-    func run(executable: String, arguments: [String]) async throws -> ProcessResult {
+    func run(executable: String, arguments: [String], timeout: Duration) async throws -> ProcessResult {
         calls.append(Call(executable: executable, arguments: arguments))
         return responses[executable] ?? ProcessResult(exitCode: 0, standardOutput: "", standardError: "")
     }
@@ -35,6 +35,13 @@ final class FakeFileSystemProbe: FileSystemProbing, @unchecked Sendable {
 
     func fileExists(atPath path: String) -> Bool { existingPaths.contains(path) }
     func isExecutableFile(atPath path: String) -> Bool { executablePaths.contains(path) }
+}
+
+struct FakeMountPointInspector: MountPointInspecting {
+    /// fstype keyed by path; nil result for anything not listed.
+    var typesByPath: [String: String] = [:]
+
+    func fileSystemType(atPath path: String) -> String? { typesByPath[path] }
 }
 
 struct FakeHelperServiceStatusProbe: HelperServiceStatusProbing {

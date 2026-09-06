@@ -1,8 +1,8 @@
 import Foundation
 
 /// Checks whether macFUSE's classic kernel extension is currently loaded, via
-/// `kextstat` (itself a thin wrapper over `kmutil showloaded` on current
-/// macOS — see its own "Executing: /usr/bin/kmutil showloaded" banner).
+/// `kmutil showloaded` (falling back to the deprecated `kextstat`, which just
+/// re-execs kmutil anyway on current macOS).
 ///
 /// This is the counterpart to `SystemExtensionInspector` for the kext backend
 /// (the one this app actually uses — see `Ntfs3gCommand.mountOptions`).
@@ -25,6 +25,16 @@ public enum KextInspector {
     }
 
     public static func macFUSEIsLoaded(using runner: ProcessRunning) async -> Bool {
+        // `kextstat` is deprecated and on current macOS just re-execs
+        // `kmutil showloaded` anyway — prefer kmutil directly, fall back to
+        // kextstat for older systems or if kmutil isn't invocable here.
+        if let result = try? await runner.run(
+            executable: "/usr/bin/kmutil",
+            arguments: ["showloaded", "--list-only"]
+        ), result.succeeded {
+            return macFUSEIsLoaded(fromOutput: result.standardOutput)
+        }
+
         guard let result = try? await runner.run(executable: "/usr/sbin/kextstat", arguments: []),
               result.succeeded else {
             return false

@@ -83,6 +83,74 @@ struct MountManagerTests {
         #expect(await runner.calls.isEmpty)
     }
 
+    @Test("Skips the whole pipeline when the volume is already ntfs-3g mounted")
+    func alreadyMountedReadWriteIsANoOp() async throws {
+        let runner = readyRunner()
+        let manager = MountManager(
+            runner: runner,
+            dependencyChecker: DependencyChecker(
+                runner: runner,
+                fileSystem: readyFileSystem(),
+                helperStatusProbe: FakeHelperServiceStatusProbe(state: .installedAndApproved)
+            ),
+            mountPointInspector: FakeMountPointInspector(typesByPath: [Self.volume.mountPath: "macfuse"]),
+            logger: AppLogger()
+        )
+
+        let result = await manager.attemptRemount(Self.volume)
+
+        #expect(try result.get().mountState == .readWrite)
+        #expect(await runner.calls.isEmpty)
+    }
+
+    @Test("The explicit repair action still runs even if something is mounted there")
+    func repairIgnoresAlreadyMounted() async {
+        let runner = readyRunner()
+        let manager = MountManager(
+            runner: runner,
+            dependencyChecker: DependencyChecker(
+                runner: runner,
+                fileSystem: readyFileSystem(),
+                helperStatusProbe: FakeHelperServiceStatusProbe(state: .installedAndApproved)
+            ),
+            mountPointInspector: FakeMountPointInspector(typesByPath: [Self.volume.mountPath: "macfuse"]),
+            logger: AppLogger()
+        )
+
+        _ = await manager.fixAndRemount(Self.volume)
+
+        #expect(await runner.calls.contains { $0.executable == Self.ntfsfix })
+    }
+
+    @Test("A dependencies-not-ready failure doesn't suppress a later retry")
+    func dependenciesNotReadyDoesNotSuppressRetry() async {
+        let runner = FakeProcessRunner()
+        let manager = MountManager(
+            runner: runner,
+            dependencyChecker: DependencyChecker(
+                runner: runner,
+                fileSystem: FakeFileSystemProbe(),
+                helperStatusProbe: FakeHelperServiceStatusProbe(state: .notInstalled)
+            ),
+            logger: AppLogger()
+        )
+
+        let first = await manager.handle(.appeared(Self.volume))
+        guard case .failure(.dependenciesNotReady) = first else {
+            Issue.record("Expected .dependenciesNotReady, got \(String(describing: first))")
+            return
+        }
+
+        // Unlike a real mount failure, this volume was never added to
+        // `handledByUs` (nothing touched the disk), so a subsequent event
+        // must be allowed to try again rather than returning nil.
+        let second = await manager.handle(.descriptionChanged(Self.volume))
+        guard case .failure(.dependenciesNotReady) = second else {
+            Issue.record("Expected the retry to run and fail again, got \(String(describing: second))")
+            return
+        }
+    }
+
     @Test("Leaves a dirty (Windows-hibernated) volume read-only, restored after probing")
     func dirtyVolumeIsRestoredReadOnly() async {
         let runner = readyRunner(overrides: [

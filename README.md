@@ -270,6 +270,17 @@ firma y firma después a mano con `codesign` directo (primero el helper,
 después la app, igual que exige la validación de firma en
 `AppNTFSHelper/HelperListenerDelegate`).
 
+> **Advertencia sobre "Apple Development":** ese tipo de certificado está
+> pensado para *desarrollo local*, no para distribución. Un `.app` firmado
+> así corre bien en la máquina que generó el certificado, pero en **otra**
+> Mac puede directamente no abrir (no solo el aviso de Gatekeeper —
+> `SecCodeCheckValidity` del helper puede fallar, o el sistema rechazar el
+> `LaunchDaemon`), porque estos certificados suelen estar atados a equipos
+> registrados. Distribución realmente portable = cuenta de Apple Developer
+> Program paga + "Developer ID Application" + notarización. Hasta entonces
+> los releases sirven sobre todo para la propia máquina del autor y para
+> pruebas.
+
 ### Configurar los secrets (una sola vez)
 
 1. Exportá tu certificado de firma desde Keychain Access: buscá

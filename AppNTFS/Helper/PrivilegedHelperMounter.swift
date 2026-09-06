@@ -1,8 +1,19 @@
 import AppNTFSKit
 import Foundation
 
-enum PrivilegedHelperMounterError: Error {
+enum PrivilegedHelperMounterError: Error, CustomStringConvertible {
     case connectionUnavailable
+    /// The helper accepted the call but never replied within the deadline —
+    /// covers a wedged helper process or stalled XPC delivery (the helper's
+    /// own `ProcessRunner` already bounds a hung `ntfs-3g` separately).
+    case timedOut
+
+    var description: String {
+        switch self {
+        case .connectionUnavailable: return "No se pudo conectar con el helper privilegiado"
+        case .timedOut: return "El helper privilegiado no respondió a tiempo"
+        }
+    }
 }
 
 /// AppNTFSKit-side seam (`PrivilegedMounting`) implemented with XPC — the only
@@ -61,30 +72,67 @@ final class PrivilegedHelperMounter: PrivilegedMounting, FullDiskAccessProbing, 
     /// Opens a fresh XPC connection, hands the caller the remote proxy plus a
     /// shared resume guard (the error handler and the caller's reply block
     /// can both fire for the same call), and tears the connection down when
-    /// the call completes either way.
+    /// the call completes either way. Bounded by `timeout`: a helper that
+    /// accepts the call but never replies would otherwise pin the caller's
+    /// `MountManager` pipeline slot forever.
     private func withHelperProxy<T: Sendable>(
-        _ body: @escaping (AppNTFSHelperProtocol, ResumeGuard, CheckedContinuation<T, Error>) -> Void
+        timeout: Duration = .seconds(180),
+        _ body: @escaping @Sendable (AppNTFSHelperProtocol, ResumeGuard, CheckedContinuation<T, Error>) -> Void
     ) async throws -> T {
         let connection = NSXPCConnection(machServiceName: helperMachServiceName, options: .privileged)
         connection.remoteObjectInterface = AppNTFSHelperXPC.makeInterface()
         connection.resume()
+        // `invalidate()` also fires the proxy's error handler, which resumes
+        // the abandoned continuation on the timeout path (no leaked-continuation
+        // warning). NSXPCConnection is safe to touch from multiple threads.
+        let connectionBox = UncheckedSendableBox(connection)
         defer { connection.invalidate() }
 
-        return try await withCheckedThrowingContinuation { continuation in
-            let resumeGuard = ResumeGuard()
+        return try await withThrowingTaskGroup(of: T?.self) { group in
+            group.addTask {
+                let value: T = try await withCheckedThrowingContinuation { continuation in
+                    let resumeGuard = ResumeGuard()
 
-            let proxy = connection.remoteObjectProxyWithErrorHandler { error in
-                resumeGuard.resumeOnce { continuation.resume(throwing: error) }
-            } as? AppNTFSHelperProtocol
+                    let proxy = connectionBox.value.remoteObjectProxyWithErrorHandler { error in
+                        resumeGuard.resumeOnce { continuation.resume(throwing: error) }
+                    } as? AppNTFSHelperProtocol
 
-            guard let proxy else {
-                resumeGuard.resumeOnce { continuation.resume(throwing: PrivilegedHelperMounterError.connectionUnavailable) }
-                return
+                    guard let proxy else {
+                        resumeGuard.resumeOnce {
+                            continuation.resume(throwing: PrivilegedHelperMounterError.connectionUnavailable)
+                        }
+                        return
+                    }
+
+                    body(proxy, resumeGuard, continuation)
+                }
+                return value
             }
+            group.addTask {
+                try? await Task.sleep(for: timeout)
+                return nil
+            }
+            defer { group.cancelAll() }
 
-            body(proxy, resumeGuard, continuation)
+            while let outcome = try await group.next() {
+                if let value = outcome { return value }
+                // Timeout won. Invalidate the connection so the proxy's error
+                // handler fires and resumes the still-suspended XPC
+                // continuation — otherwise the task group would hang forever
+                // waiting to drain that child.
+                connectionBox.value.invalidate()
+                throw PrivilegedHelperMounterError.timedOut
+            }
+            throw PrivilegedHelperMounterError.timedOut
         }
     }
+}
+
+/// Minimal escape hatch for handing a reference-thread-safe Cocoa object
+/// (here `NSXPCConnection`) to a `@Sendable` closure.
+private struct UncheckedSendableBox<T>: @unchecked Sendable {
+    let value: T
+    init(_ value: T) { self.value = value }
 }
 
 /// The XPC error handler and the reply block can both fire for the same

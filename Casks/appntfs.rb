@@ -23,6 +23,10 @@ cask "appntfs" do
 
   caveats do
     <<~EOS
+      NOTA: este build está firmado con un certificado "Apple Development"
+      (cuenta gratuita, sin Developer ID ni notarización). Puede no abrir en
+      algunas Macs distintas a la del autor. Ver el README del proyecto.
+
       AppNTFS todavía necesita ntfs-3g-mac, que no está en homebrew-core:
         brew tap gromgit/homebrew-fuse
         brew install ntfs-3g-mac

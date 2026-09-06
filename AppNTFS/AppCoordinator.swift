@@ -138,11 +138,30 @@ final class AppCoordinator {
     }
 
     func recheckDependencies() async {
+        let wasReady = dependencyStatus?.isReady ?? false
         dependencyStatus = await dependencyChecker.checkAll()
+
+        // When dependencies just went from missing to ready, drive the
+        // volumes that failed for exactly that reason — otherwise the user
+        // would have to physically replug each drive after installing
+        // macFUSE / approving the helper.
+        guard !wasReady, dependencyStatus?.isReady == true, autoRemountEnabled else { return }
+        for volume in volumes where Self.failedForMissingDependencies(volume) && !isIgnored(volume) {
+            markMounting(volume)
+            let result = await mountManager.attemptRemount(volume)
+            apply(result, to: volume)
+        }
+    }
+
+    private static func failedForMissingDependencies(_ volume: NTFSVolume) -> Bool {
+        if case .error(.dependenciesNotReady) = volume.mountState { return true }
+        return false
     }
 
     func retryMount(_ volume: NTFSVolume) {
-        Task {
+        Task { [weak self] in
+            guard let self else { return }
+            markMounting(volume)
             let result = await mountManager.attemptRemount(volume)
             apply(result, to: volume)
         }
@@ -152,7 +171,9 @@ final class AppCoordinator {
     /// user-initiated (see `MountManager.fixAndRemount`'s doc comment for
     /// why this is never automatic).
     func fixAndRetryMount(_ volume: NTFSVolume) {
-        Task {
+        Task { [weak self] in
+            guard let self else { return }
+            markMounting(volume)
             let result = await mountManager.fixAndRemount(volume)
             apply(result, to: volume)
         }
@@ -160,7 +181,15 @@ final class AppCoordinator {
 
     func eject(_ volume: NTFSVolume) {
         Task {
-            _ = try? await ProcessRunner().run(
+            let runner = ProcessRunner()
+            // Unmount first: `diskutil eject` alone can leave an ntfs-3g /
+            // FUSE mount behind. Force-unmount the mountpoint, then eject the
+            // whole device.
+            _ = try? await runner.run(
+                executable: "/usr/sbin/diskutil",
+                arguments: ["unmount", "force", volume.mountPath]
+            )
+            _ = try? await runner.run(
                 executable: "/usr/sbin/diskutil",
                 arguments: ["eject", volume.bsdName]
             )
@@ -202,11 +231,21 @@ final class AppCoordinator {
         }
     }
 
+    /// Re-syncs the stored snapshot with the real system state — call when a
+    /// view showing the toggle appears, since the user can also change the
+    /// login-item registration directly in System Settings while the app runs.
+    func refreshLaunchAtLoginStatus() {
+        launchAtLoginEnabled = SMAppService.mainApp.status == .enabled
+    }
+
     private func handle(_ event: DiskEvent) async {
         switch event {
         case .appeared(let volume):
             upsert(volume)
             guard autoRemountEnabled, !isIgnored(volume) else { return }
+            // `.appeared` always runs an attempt (never returns nil), so
+            // showing "Montando…" here can't get stuck.
+            markMounting(volume)
             if let result = await mountManager.handle(event) {
                 apply(result, to: volume)
             }
@@ -215,6 +254,8 @@ final class AppCoordinator {
                 volumes.append(volume)
             }
             guard autoRemountEnabled, !isIgnored(volume) else { return }
+            // No `markMounting` here: `handle` may short-circuit to nil for a
+            // device we've already acted on, which would leave the row stuck.
             if let result = await mountManager.handle(event) {
                 apply(result, to: volume)
             }
@@ -229,6 +270,10 @@ final class AppCoordinator {
         case .success(let mounted):
             upsert(mounted)
             notify(title: mounted.volumeName, body: "Montado en lectura/escritura.")
+        case .failure(.operationAlreadyInProgress):
+            // Another attempt for this device is mid-pipeline and will publish
+            // the real outcome — don't stomp the row with a transient error.
+            break
         case .failure(let error):
             var updated = volume
             updated.mountState = .error(error)
@@ -237,6 +282,14 @@ final class AppCoordinator {
                 notify(title: volume.volumeName, body: error.description)
             }
         }
+    }
+
+    /// Optimistic "Montando…" feedback while an attempt runs. Only used on
+    /// paths guaranteed to reach `apply` afterwards.
+    private func markMounting(_ volume: NTFSVolume) {
+        var updated = volume
+        updated.mountState = .mounting
+        upsert(updated)
     }
 
     /// Skips `.dependenciesNotReady` (already surfaced persistently via the

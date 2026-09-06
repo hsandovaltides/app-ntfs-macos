@@ -16,11 +16,25 @@ final class HelperService: NSObject, AppNTFSHelperProtocol, @unchecked Sendable 
     private let runner: ProcessRunning = ProcessRunner()
     private let fileManager = FileManager.default
 
+    /// Returned without spawning anything when a request fails
+    /// `HelperRequestValidation` — the helper runs as root, so a malformed
+    /// or tampered request is dropped, not best-effort executed.
+    private static let rejected = HelperOperationResult(
+        exitCode: -1,
+        standardOutput: "",
+        standardError: "AppNTFSHelper rejected the request: parameters failed validation"
+    )
+
     func probeReadWrite(
         ntfs3gProbeExecutablePath: String,
         devicePath: String,
         reply: @escaping @Sendable (HelperOperationResult) -> Void
     ) {
+        guard HelperRequestValidation.isValidExecutablePath(ntfs3gProbeExecutablePath),
+              HelperRequestValidation.isValidDevicePath(devicePath) else {
+            reply(Self.rejected)
+            return
+        }
         Task {
             do {
                 let result = try await runner.run(
@@ -45,6 +59,13 @@ final class HelperService: NSObject, AppNTFSHelperProtocol, @unchecked Sendable 
         options: String,
         reply: @escaping @Sendable (HelperOperationResult) -> Void
     ) {
+        guard HelperRequestValidation.isValidExecutablePath(ntfs3gExecutablePath),
+              HelperRequestValidation.isValidDevicePath(devicePath),
+              HelperRequestValidation.isValidMountPath(mountPath),
+              HelperRequestValidation.isValidMountOptions(options) else {
+            reply(Self.rejected)
+            return
+        }
         Task {
             let createdDirectory = (try? createMountPointIfNeeded(mountPath)) ?? false
 
@@ -75,6 +96,11 @@ final class HelperService: NSObject, AppNTFSHelperProtocol, @unchecked Sendable 
         devicePath: String,
         reply: @escaping @Sendable (HelperOperationResult) -> Void
     ) {
+        guard HelperRequestValidation.isValidExecutablePath(ntfsfixExecutablePath),
+              HelperRequestValidation.isValidDevicePath(devicePath) else {
+            reply(Self.rejected)
+            return
+        }
         Task {
             do {
                 let result = try await runner.run(executable: ntfsfixExecutablePath, arguments: [devicePath])
