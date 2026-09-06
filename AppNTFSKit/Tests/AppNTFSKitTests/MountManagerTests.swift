@@ -83,6 +83,45 @@ struct MountManagerTests {
         #expect(await runner.calls.isEmpty)
     }
 
+    @Test("Skips the whole pipeline when the volume is already ntfs-3g mounted")
+    func alreadyMountedReadWriteIsANoOp() async throws {
+        let runner = readyRunner()
+        let manager = MountManager(
+            runner: runner,
+            dependencyChecker: DependencyChecker(
+                runner: runner,
+                fileSystem: readyFileSystem(),
+                helperStatusProbe: FakeHelperServiceStatusProbe(state: .installedAndApproved)
+            ),
+            mountPointInspector: FakeMountPointInspector(typesByPath: [Self.volume.mountPath: "macfuse"]),
+            logger: AppLogger()
+        )
+
+        let result = await manager.attemptRemount(Self.volume)
+
+        #expect(try result.get().mountState == .readWrite)
+        #expect(await runner.calls.isEmpty)
+    }
+
+    @Test("The explicit repair action still runs even if something is mounted there")
+    func repairIgnoresAlreadyMounted() async {
+        let runner = readyRunner()
+        let manager = MountManager(
+            runner: runner,
+            dependencyChecker: DependencyChecker(
+                runner: runner,
+                fileSystem: readyFileSystem(),
+                helperStatusProbe: FakeHelperServiceStatusProbe(state: .installedAndApproved)
+            ),
+            mountPointInspector: FakeMountPointInspector(typesByPath: [Self.volume.mountPath: "macfuse"]),
+            logger: AppLogger()
+        )
+
+        _ = await manager.fixAndRemount(Self.volume)
+
+        #expect(await runner.calls.contains { $0.executable == Self.ntfsfix })
+    }
+
     @Test("A dependencies-not-ready failure doesn't suppress a later retry")
     func dependenciesNotReadyDoesNotSuppressRetry() async {
         let runner = FakeProcessRunner()

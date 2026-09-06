@@ -9,7 +9,14 @@ public actor MountManager {
     private let runner: ProcessRunning
     private let dependencyChecker: DependencyChecker
     private let diskUtil: DiskUtilCommand
+    private let mountPointInspector: MountPointInspecting
     private let logger: AppLogger
+
+    /// `statfs` filesystem-type names that mean "already mounted read-write
+    /// via a FUSE NTFS driver" — nothing more for the pipeline to do.
+    private static let fuseFileSystemTypes: Set<String> = [
+        "macfuse", "fuse", "osxfuse", "fuse-t", "ntfs-3g"
+    ]
 
     /// nil ⇒ falls back to mounting directly as the current user (only ever
     /// works in tests; `ntfs-3g` itself refuses unprivileged mounts in
@@ -36,12 +43,14 @@ public actor MountManager {
         runner: ProcessRunning = ProcessRunner(),
         dependencyChecker: DependencyChecker = DependencyChecker(),
         privilegedMounter: PrivilegedMounting? = nil,
+        mountPointInspector: MountPointInspecting = DefaultMountPointInspector(),
         logger: AppLogger = .shared
     ) {
         self.runner = runner
         self.dependencyChecker = dependencyChecker
         self.diskUtil = DiskUtilCommand(runner: runner)
         self.privilegedMounter = privilegedMounter
+        self.mountPointInspector = mountPointInspector
         self.logger = logger
     }
 
@@ -96,6 +105,19 @@ public actor MountManager {
         handledByUs.insert(volume.bsdName)
 
         logger.info("Detected NTFS volume \(volume.volumeName) (\(volume.bsdName))")
+
+        // Idempotency: if it's already mounted read-write through ntfs-3g
+        // (the app restarted / relaunched at login while the volume stayed
+        // put), don't tear down a working mount just to rebuild it. Skipped
+        // for the explicit repair action, which the user asked for regardless.
+        if !repairDirtyFlag,
+           let fsType = mountPointInspector.fileSystemType(atPath: volume.mountPath),
+           Self.fuseFileSystemTypes.contains(fsType.lowercased()) {
+            logger.info("\(volume.bsdName) already mounted read-write via \(fsType) — nothing to do")
+            var mounted = volume
+            mounted.mountState = .readWrite
+            return .success(mounted)
+        }
 
         let status = await dependencyChecker.checkAll()
         guard status.isReady, let homebrewPrefix = status.homebrewPrefix else {
