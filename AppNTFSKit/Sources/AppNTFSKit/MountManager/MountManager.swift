@@ -119,8 +119,8 @@ public actor MountManager {
             return .success(mounted)
         }
 
-        let status = await dependencyChecker.checkAll()
-        guard status.isReady, let homebrewPrefix = status.homebrewPrefix else {
+        let status = await dependencyChecker.cachedStatus()
+        guard status.isReady, let ntfs3gBinDirectory = status.ntfs3gBinDirectory else {
             logger.warning("Dependencies not ready for \(volume.bsdName): \(status)")
             // Nothing above touched the disk, so un-suppress this volume:
             // a later retry (a replug, or `AppCoordinator.recheckDependencies`
@@ -130,7 +130,7 @@ public actor MountManager {
             return .failure(.dependenciesNotReady(status))
         }
 
-        let ntfs3g = Ntfs3gCommand(runner: runner, homebrewPrefix: homebrewPrefix)
+        let ntfs3g = Ntfs3gCommand(runner: runner, binDirectory: ntfs3gBinDirectory)
         let mounter = privilegedMounter ?? ntfs3g
 
         // Unmount before probing, not after: ntfs-3g.probe (and ntfsfix)

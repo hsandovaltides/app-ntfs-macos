@@ -9,7 +9,14 @@ public enum InstallState: Sendable, Equatable {
 
 public struct DependencyStatus: Sendable, Equatable {
     public let homebrewPrefix: String?
-    public let ntfs3gInstalled: Bool
+    /// Directory holding `ntfs-3g`, `ntfs-3g.probe` and `ntfsfix` — the copies
+    /// embedded in the app bundle when they're there, otherwise a Homebrew
+    /// install. `nil` means neither was found.
+    ///
+    /// Stored rather than derived from `homebrewPrefix` because those two facts
+    /// came apart once the binaries ship inside the app: ntfs-3g can now be
+    /// present with no Homebrew at all.
+    public let ntfs3gBinDirectory: String?
     public let macFUSEState: InstallState
     public let helperState: InstallState
     /// Full Disk Access for the helper *binary* specifically — a separate,
@@ -22,9 +29,15 @@ public struct DependencyStatus: Sendable, Equatable {
     /// that couldn't run.
     public let fullDiskAccessGranted: Bool
 
+    /// Whether ntfs-3g was found anywhere. Homebrew is no longer implied — see
+    /// `ntfs3gBinDirectory`.
+    public var ntfs3gInstalled: Bool { ntfs3gBinDirectory != nil }
+
+    /// Homebrew is deliberately absent from this list. It is a delivery
+    /// mechanism for ntfs-3g, not a requirement of its own, and with the
+    /// binaries embedded a machine with no Homebrew is a perfectly ready one.
     public var isReady: Bool {
-        homebrewPrefix != nil
-            && ntfs3gInstalled
+        ntfs3gInstalled
             && macFUSEState == .installedAndApproved
             && helperState == .installedAndApproved
             && fullDiskAccessGranted
@@ -32,16 +45,35 @@ public struct DependencyStatus: Sendable, Equatable {
 
     public init(
         homebrewPrefix: String?,
-        ntfs3gInstalled: Bool,
+        ntfs3gBinDirectory: String?,
         macFUSEState: InstallState,
         helperState: InstallState,
         fullDiskAccessGranted: Bool = true
     ) {
         self.homebrewPrefix = homebrewPrefix
-        self.ntfs3gInstalled = ntfs3gInstalled
+        self.ntfs3gBinDirectory = ntfs3gBinDirectory
         self.macFUSEState = macFUSEState
         self.helperState = helperState
         self.fullDiskAccessGranted = fullDiskAccessGranted
+    }
+
+    /// Homebrew-flavoured form: "installed" means installed *by Homebrew*, at
+    /// the canonical `opt/ntfs-3g-mac/bin` location under the given prefix.
+    public init(
+        homebrewPrefix: String?,
+        ntfs3gInstalled: Bool,
+        macFUSEState: InstallState,
+        helperState: InstallState,
+        fullDiskAccessGranted: Bool = true
+    ) {
+        self.init(
+            homebrewPrefix: homebrewPrefix,
+            ntfs3gBinDirectory: (ntfs3gInstalled ? homebrewPrefix : nil)
+                .map(Ntfs3gCommand.homebrewBinDirectory(prefix:)),
+            macFUSEState: macFUSEState,
+            helperState: helperState,
+            fullDiskAccessGranted: fullDiskAccessGranted
+        )
     }
 }
 
@@ -93,7 +125,7 @@ public struct DefaultFileSystemProbe: FileSystemProbing {
 
 extension DependencyStatus: CustomStringConvertible {
     public var description: String {
-        "homebrew=\(homebrewPrefix ?? "missing") ntfs3g=\(ntfs3gInstalled) macFUSE=\(macFUSEState) helper=\(helperState) fullDiskAccess=\(fullDiskAccessGranted)"
+        "homebrew=\(homebrewPrefix ?? "missing") ntfs3g=\(ntfs3gBinDirectory ?? "missing") macFUSE=\(macFUSEState) helper=\(helperState) fullDiskAccess=\(fullDiskAccessGranted)"
     }
 }
 
@@ -110,29 +142,100 @@ public struct DependencyChecker: Sendable {
     /// systems don't share modules.
     static let helperLaunchDaemonPlistName = "com.appntfs.app.helper.plist"
 
+    /// How long `cachedStatus()` may reuse a previous probe.
+    ///
+    /// A full check is not cheap: `macFUSEInstallState` shells out to
+    /// `kmutil showloaded`, which routinely takes seconds, and the Full Disk
+    /// Access probe is an XPC round trip to the helper. `MountManager` runs
+    /// one check *per volume*, so plugging in a drive with several NTFS
+    /// partitions paid that cost once per partition.
+    ///
+    /// Ten seconds is safe because dependency state only changes through
+    /// deliberate user action — a `brew install`, a toggle in System Settings
+    /// — and every one of those paths ends at the "Recomprobar" button, which
+    /// calls `checkAll()` and refreshes the cache outright.
+    public static let defaultCacheTTL: TimeInterval = 10
+
+    /// Reference-type box so the cache survives the value-semantics copies a
+    /// `Sendable` struct undergoes when captured across tasks: every copy of a
+    /// given `DependencyChecker` shares one cache, while two separately
+    /// constructed checkers (the app coordinator's and `MountManager`'s) stay
+    /// independent, as they were before.
+    private final class StatusCache: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: DependencyStatus?
+        private var storedAt: Date?
+
+        func read(ttl: TimeInterval, now: Date) -> DependencyStatus? {
+            lock.lock()
+            defer { lock.unlock() }
+            guard let value, let storedAt, now.timeIntervalSince(storedAt) < ttl else { return nil }
+            return value
+        }
+
+        func write(_ status: DependencyStatus, at now: Date) {
+            lock.lock()
+            defer { lock.unlock() }
+            value = status
+            storedAt = now
+        }
+    }
+
     private let runner: ProcessRunning
     private let fileSystem: FileSystemProbing
     private let helperStatusProbe: HelperServiceStatusProbing
     private let fullDiskAccessProbe: FullDiskAccessProbing?
+    private let bundledBinariesDirectory: String?
+    private let cacheTTL: TimeInterval
+    private let cache = StatusCache()
 
     public init(
         runner: ProcessRunning = ProcessRunner(),
         fileSystem: FileSystemProbing = DefaultFileSystemProbe(),
         helperStatusProbe: HelperServiceStatusProbing = DefaultHelperServiceStatusProbe(),
-        fullDiskAccessProbe: FullDiskAccessProbing? = nil
+        fullDiskAccessProbe: FullDiskAccessProbing? = nil,
+        bundledBinariesDirectory: String? = BundledNtfs3g.runningHostDirectory,
+        cacheTTL: TimeInterval = DependencyChecker.defaultCacheTTL
     ) {
         self.runner = runner
         self.fileSystem = fileSystem
         self.helperStatusProbe = helperStatusProbe
         self.fullDiskAccessProbe = fullDiskAccessProbe
+        self.bundledBinariesDirectory = bundledBinariesDirectory
+        self.cacheTTL = cacheTTL
     }
 
+    /// Always re-probes, and refreshes the cache `cachedStatus()` reads.
+    ///
+    /// This is what the user's explicit "Recomprobar" drives, so a recheck
+    /// taken right after changing something in System Settings can never be
+    /// answered from a stale entry.
     public func checkAll() async -> DependencyStatus {
+        let status = await probeAll()
+        cache.write(status, at: Date())
+        return status
+    }
+
+    /// Cached variant for the mount path, where the same status is needed once
+    /// per volume and cannot meaningfully differ between partitions of the
+    /// same drive.
+    ///
+    /// Two concurrent misses can both probe. That is deliberate: the probes are
+    /// read-only and idempotent, the only cost is a duplicated check, and
+    /// single-flighting would mean making this an actor for no real benefit —
+    /// the one hot caller, `MountManager`, is already an actor and serializes
+    /// its own calls.
+    public func cachedStatus() async -> DependencyStatus {
+        if let cached = cache.read(ttl: cacheTTL, now: Date()) { return cached }
+        return await checkAll()
+    }
+
+    private func probeAll() async -> DependencyStatus {
         let prefix = homebrewPrefix()
         let helperState = helperStatusProbe.status(forPlistName: Self.helperLaunchDaemonPlistName)
         return DependencyStatus(
             homebrewPrefix: prefix,
-            ntfs3gInstalled: ntfs3gIsInstalled(homebrewPrefix: prefix),
+            ntfs3gBinDirectory: ntfs3gBinDirectory(homebrewPrefix: prefix),
             macFUSEState: await macFUSEInstallState(homebrewPrefix: prefix),
             helperState: helperState,
             fullDiskAccessGranted: await fullDiskAccessGranted(helperState: helperState)
@@ -154,13 +257,33 @@ public struct DependencyChecker: Sendable {
         Self.knownHomebrewPrefixes.first { fileSystem.isExecutableFile(atPath: "\($0)/bin/brew") }
     }
 
-    func ntfs3gIsInstalled(homebrewPrefix: String?) -> Bool {
-        guard let homebrewPrefix else { return false }
+    /// Where ntfs-3g lives, preferring the copies embedded in the app bundle.
+    ///
+    /// Bundled first because it's the only location the user cannot break: it
+    /// ships with the app, is signed with it, and needs no tap, no `brew link`
+    /// and no `PATH`. Homebrew stays as the fallback so an install predating
+    /// the embedded binaries — or a build where the embed step didn't run —
+    /// keeps working unchanged.
+    func ntfs3gBinDirectory(homebrewPrefix: String?) -> String? {
+        // All three binaries are required here, unlike the Homebrew branch
+        // below: this directory is our own build output, so a partial copy is
+        // a broken embed step rather than a user's install choice, and falling
+        // through to Homebrew is a better outcome than mounting with a
+        // half-present toolchain.
+        if let bundledBinariesDirectory,
+           HelperRequestValidation.allowedExecutableNames.allSatisfy({
+               fileSystem.isExecutableFile(atPath: "\(bundledBinariesDirectory)/\($0)")
+           }) {
+            return bundledBinariesDirectory
+        }
+
         // ntfs-3g on macOS ships from the `gromgit/homebrew-fuse` tap as the
         // `ntfs-3g-mac` formula (the plain `ntfs-3g` homebrew-core formula is
         // Linux-only). Homebrew always maintains a stable `opt/<formula>` symlink
         // regardless of link state, so probe that rather than `bin/` directly.
-        return fileSystem.isExecutableFile(atPath: "\(homebrewPrefix)/opt/ntfs-3g-mac/bin/ntfs-3g")
+        guard let homebrewPrefix else { return nil }
+        let directory = Ntfs3gCommand.homebrewBinDirectory(prefix: homebrewPrefix)
+        return fileSystem.isExecutableFile(atPath: "\(directory)/ntfs-3g") ? directory : nil
     }
 
     func macFUSEInstallState(homebrewPrefix: String?) async -> InstallState {

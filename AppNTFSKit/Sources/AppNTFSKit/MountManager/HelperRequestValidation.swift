@@ -11,9 +11,24 @@ import Foundation
 /// would otherwise reach `fix(ntfsfixExecutablePath:…)` / `probeReadWrite`
 /// and run an arbitrary executable as root with an attacker-chosen argument.
 ///
-/// So the helper only ever executes one of three known Homebrew binaries,
-/// only against a `/dev/diskN…` node, only mounting under `/Volumes/`, and
-/// only with mount options drawn from a fixed key set.
+/// So the helper only ever executes one of three known ntfs-3g binaries, only
+/// against a `/dev/diskN…` node, only mounting under `/Volumes/`, and only
+/// with mount options drawn from a fixed key set.
+///
+/// Those binaries may live in the app bundle's `Contents/Helpers` (the copies
+/// `Scripts/embed-ntfs-3g.sh` puts there) or under a Homebrew prefix. Neither
+/// location is one the helper takes from the request: Homebrew's is a
+/// hardcoded list, and the bundle's is derived from the helper's *own*
+/// executable path (`BundledNtfs3g.runningHostDirectory`).
+///
+/// The bundled rule is the tighter of the two, which is worth being explicit
+/// about since it is the newer one. `/opt/homebrew` is owned by the invoking
+/// user on Apple Silicon — anyone who can write there could already swap the
+/// binary this helper runs as root, and that has been true since the
+/// allow-list was written. `Contents/Helpers` sits inside a signed bundle
+/// that `SMAppService` requires to be in `/Applications`, so writing to it
+/// needs admin rights the attacker would not otherwise have. It is also
+/// matched as an exact directory rather than a prefix.
 public enum HelperRequestValidation {
     /// Apple Silicon and Intel Homebrew prefixes — must match
     /// `DependencyChecker.knownHomebrewPrefixes`.
@@ -30,11 +45,32 @@ public enum HelperRequestValidation {
         "volname", "windows_names", "auto_xattr", "local_lockfile"
     ]
 
-    /// A Homebrew-managed `ntfs-3g-mac` binary path: absolute, no `..`
-    /// traversal, under a known prefix, with an allow-listed basename.
+    /// An `ntfs-3g-mac` binary path the helper is willing to execute: absolute,
+    /// no `..` traversal, an allow-listed basename, and located either in the
+    /// app bundle's own `Contents/Helpers` or under a known Homebrew prefix.
+    ///
+    /// The bundled directory is resolved from the *running* executable
+    /// (`BundledNtfs3g.runningHostDirectory`), never from the request — so
+    /// accepting bundled paths does not let a caller nominate a directory. It
+    /// is also matched exactly rather than by prefix, which is tighter than
+    /// the Homebrew rule below.
     public static func isValidExecutablePath(_ path: String) -> Bool {
+        isValidExecutablePath(path, bundledBinariesDirectory: BundledNtfs3g.runningHostDirectory)
+    }
+
+    /// Testable form of `isValidExecutablePath(_:)` with the bundled directory
+    /// supplied explicitly, since a test binary is not inside an app bundle
+    /// and would otherwise only ever exercise the Homebrew branch.
+    public static func isValidExecutablePath(
+        _ path: String,
+        bundledBinariesDirectory: String?
+    ) -> Bool {
         guard path.hasPrefix("/"), !pathContainsTraversal(path) else { return false }
         guard allowedExecutableNames.contains((path as NSString).lastPathComponent) else { return false }
+        if let bundledBinariesDirectory,
+           (path as NSString).deletingLastPathComponent == bundledBinariesDirectory {
+            return true
+        }
         return allowedHomebrewPrefixes.contains { path == $0 || path.hasPrefix($0 + "/") }
     }
 

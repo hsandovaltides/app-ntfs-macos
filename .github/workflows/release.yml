@@ -25,6 +25,16 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      # Build-time only: Scripts/embed-ntfs-3g.sh copies these binaries out of
+      # the keg and into the app bundle, so the published app carries its own
+      # copy and users never install this tap. The runner image doesn't have
+      # it, and without this step the embed script takes its fallback branch
+      # and the release ships without them.
+      - name: Install ntfs-3g (embedded into the app at build time)
+        run: |
+          brew tap gromgit/homebrew-fuse
+          brew install ntfs-3g-mac
+
       - name: Generate Xcode project
         run: xcodegen generate
 
@@ -73,6 +83,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             MARKETING_VERSION="${{ steps.version.outputs.plainVersion }}" \
             CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
+            REQUIRE_EMBEDDED_NTFS3G=1 \
             build
 
       - name: Sign app and helper
@@ -84,9 +95,29 @@ jobs:
             exit 1
           fi
           APP="build/Build/Products/Release/AppNTFS.app"
-          # Inner-to-outer: the helper tool has to be signed before the app
-          # bundle that embeds it (see AppNTFSHelper/HelperListenerDelegate's
-          # code-signature check — this signature is what it validates).
+          # Inner-to-outer throughout: a nested signature has to be final
+          # before whatever seals it is signed, or the outer seal records a
+          # digest that no longer matches.
+          #
+          # The embedded ntfs-3g binaries come first. Scripts/embed-ntfs-3g.sh
+          # already signed them during the build, but that build ran with
+          # CODE_SIGNING_ALLOWED=NO, so it fell back to an ad-hoc signature
+          # with no Team ID and no hardened runtime. Re-sign them here with the
+          # real identity — dylibs before the executables that load them, so
+          # library validation sees matching Team IDs on both sides.
+          for library in "${APP}/Contents/Frameworks/"*.dylib; do
+            [ -f "${library}" ] || continue
+            codesign --force --options runtime --timestamp \
+              --sign "${SIGNING_IDENTITY}" "${library}"
+          done
+          for binary in "${APP}/Contents/Helpers/"*; do
+            [ -f "${binary}" ] || continue
+            codesign --force --options runtime --timestamp \
+              --sign "${SIGNING_IDENTITY}" "${binary}"
+          done
+          # Then the helper tool, before the app bundle that embeds it (see
+          # AppNTFSHelper/HelperListenerDelegate's code-signature check — this
+          # signature is what it validates).
           codesign --force --options runtime --timestamp \
             --sign "${SIGNING_IDENTITY}" \
             "${APP}/Contents/MacOS/AppNTFSHelper"
@@ -94,6 +125,36 @@ jobs:
             --sign "${SIGNING_IDENTITY}" \
             "${APP}"
           codesign --verify --deep --strict --verbose=2 "${APP}"
+
+      # The embed step degrades to a warning on a developer's machine, and the
+      # app degrades to "ask the user for Homebrew" at runtime — so a release
+      # missing these binaries would build, sign, verify and publish without a
+      # single red mark. Assert on the actual artifact instead.
+      - name: Verify ntfs-3g was embedded
+        run: |
+          APP="build/Build/Products/Release/AppNTFS.app"
+          for binary in ntfs-3g ntfs-3g.probe ntfsfix; do
+            if [ ! -x "${APP}/Contents/Helpers/${binary}" ]; then
+              echo "::error::${binary} is missing from the built app — the embed step did not run."
+              exit 1
+            fi
+          done
+          # GPLv2 obligation: the licence texts have to ship with the binaries.
+          for licence in COPYING COPYING.LIB README.txt; do
+            if [ ! -f "${APP}/Contents/Resources/ntfs-3g/${licence}" ]; then
+              echo "::error::Resources/ntfs-3g/${licence} is missing — the binaries cannot be redistributed without it."
+              exit 1
+            fi
+          done
+          # A load command still pointing at the build machine's Homebrew is a
+          # binary that fails to launch on any other Mac.
+          if otool -L "${APP}/Contents/Helpers/"* \
+             | grep -E '^\s+(/opt/homebrew|/usr/local)/(opt|Cellar)/'; then
+            echo "::error::An embedded binary still links against the build machine's Homebrew."
+            exit 1
+          fi
+          echo "Embedded ntfs-3g verified:"
+          otool -L "${APP}/Contents/Helpers/ntfs-3g"
 
       - name: Package
         run: |

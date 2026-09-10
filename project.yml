@@ -78,6 +78,18 @@ targets:
         codeSign: true
         copy:
           destination: executables
+    # Runs after the bundle is assembled and before Xcode signs the app, so
+    # the embedded binaries are sealed into the app's CodeResources. Xcode
+    # only signs targets it knows about, so the script signs them itself.
+    postBuildScripts:
+      - name: Embed ntfs-3g
+        script: '"${SRCROOT}/Scripts/embed-ntfs-3g.sh"'
+        # No outputFiles: the set of bundled dylibs is discovered by walking
+        # otool -L, so it isn't knowable at project-generation time. That costs
+        # this phase its up-to-date check and it reruns every build — it takes
+        # well under a second.
+        basedOnDependencyAnalysis: false
+
     settings:
       base:
         PRODUCT_NAME: AppNTFS

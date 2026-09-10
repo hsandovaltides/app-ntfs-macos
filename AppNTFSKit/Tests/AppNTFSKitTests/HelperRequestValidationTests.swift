@@ -10,6 +10,39 @@ struct HelperRequestValidationTests {
         #expect(HelperRequestValidation.isValidExecutablePath("/usr/local/opt/ntfs-3g-mac/bin/ntfsfix"))
     }
 
+    @Test("Accepts the binaries embedded in the running app bundle")
+    func acceptsBundledExecutables() {
+        let helpers = "/Applications/AppNTFS.app/Contents/Helpers"
+        #expect(HelperRequestValidation.isValidExecutablePath(
+            "\(helpers)/ntfs-3g", bundledBinariesDirectory: helpers))
+        #expect(HelperRequestValidation.isValidExecutablePath(
+            "\(helpers)/ntfsfix", bundledBinariesDirectory: helpers))
+    }
+
+    @Test("The bundled directory is matched exactly, not as a prefix")
+    func bundledDirectoryIsNotAPrefixRule() {
+        let helpers = "/Applications/AppNTFS.app/Contents/Helpers"
+        // Homebrew paths are accepted by prefix because the whole tree is
+        // Homebrew's. The bundle is not: only the one directory the embed
+        // script writes to counts, so a subdirectory or a sibling — say
+        // Contents/Resources, which holds user-writable-ish payload — can
+        // never be used to smuggle in a binary.
+        #expect(!HelperRequestValidation.isValidExecutablePath(
+            "\(helpers)/nested/ntfs-3g", bundledBinariesDirectory: helpers))
+        #expect(!HelperRequestValidation.isValidExecutablePath(
+            "/Applications/AppNTFS.app/Contents/Resources/ntfs-3g", bundledBinariesDirectory: helpers))
+        #expect(!HelperRequestValidation.isValidExecutablePath(
+            "\(helpers)/../Resources/ntfs-3g", bundledBinariesDirectory: helpers))
+    }
+
+    @Test("With no bundled directory, only the Homebrew rule applies")
+    func withoutBundleFallsBackToHomebrew() {
+        #expect(!HelperRequestValidation.isValidExecutablePath(
+            "/Applications/AppNTFS.app/Contents/Helpers/ntfs-3g", bundledBinariesDirectory: nil))
+        #expect(HelperRequestValidation.isValidExecutablePath(
+            "/opt/homebrew/opt/ntfs-3g-mac/bin/ntfs-3g", bundledBinariesDirectory: nil))
+    }
+
     @Test("Rejects arbitrary executables, other prefixes, and path traversal")
     func rejectsUnexpectedExecutables() {
         #expect(!HelperRequestValidation.isValidExecutablePath("/bin/sh"))

@@ -129,4 +129,82 @@ struct DependencyCheckerTests {
 
         #expect(status.homebrewPrefix == "/usr/local")
     }
+
+    @Test("Embedded binaries are preferred over a Homebrew install")
+    func prefersBundledBinaries() async {
+        let helpers = "/Applications/AppNTFS.app/Contents/Helpers"
+        let fileSystem = FakeFileSystemProbe(
+            existingPaths: ["/Library/Filesystems/macfuse.fs"],
+            executablePaths: [
+                "/opt/homebrew/bin/brew",
+                "/opt/homebrew/opt/ntfs-3g-mac/bin/ntfs-3g",
+                "\(helpers)/ntfs-3g",
+                "\(helpers)/ntfs-3g.probe",
+                "\(helpers)/ntfsfix"
+            ]
+        )
+        let status = await DependencyChecker(
+            runner: FakeProcessRunner(),
+            fileSystem: fileSystem,
+            helperStatusProbe: FakeHelperServiceStatusProbe(state: .installedAndApproved),
+            bundledBinariesDirectory: helpers
+        ).checkAll()
+
+        #expect(status.ntfs3gBinDirectory == helpers)
+        #expect(status.homebrewPrefix == "/opt/homebrew")
+    }
+
+    @Test("A partial embed falls back to Homebrew instead of half-using the bundle")
+    func partialBundleFallsBackToHomebrew() async {
+        let helpers = "/Applications/AppNTFS.app/Contents/Helpers"
+        let fileSystem = FakeFileSystemProbe(
+            existingPaths: ["/Library/Filesystems/macfuse.fs"],
+            executablePaths: [
+                "/opt/homebrew/bin/brew",
+                "/opt/homebrew/opt/ntfs-3g-mac/bin/ntfs-3g",
+                // ntfsfix and ntfs-3g.probe missing: a broken embed step.
+                "\(helpers)/ntfs-3g"
+            ]
+        )
+        let status = await DependencyChecker(
+            runner: FakeProcessRunner(),
+            fileSystem: fileSystem,
+            helperStatusProbe: FakeHelperServiceStatusProbe(state: .installedAndApproved),
+            bundledBinariesDirectory: helpers
+        ).checkAll()
+
+        #expect(status.ntfs3gBinDirectory == "/opt/homebrew/opt/ntfs-3g-mac/bin")
+    }
+
+    @Test("Ready with the embedded binaries and no Homebrew at all")
+    func readyWithoutHomebrew() async {
+        let helpers = "/Applications/AppNTFS.app/Contents/Helpers"
+        let fileSystem = FakeFileSystemProbe(
+            existingPaths: ["/Library/Filesystems/macfuse.fs"],
+            executablePaths: [
+                "\(helpers)/ntfs-3g",
+                "\(helpers)/ntfs-3g.probe",
+                "\(helpers)/ntfsfix"
+            ]
+        )
+        let runner = FakeProcessRunner(responses: [
+            "/usr/bin/systemextensionsctl": ProcessResult(
+                exitCode: 0,
+                standardOutput: SampleSystemExtensionsOutput.macFUSEApproved,
+                standardError: ""
+            )
+        ])
+        let status = await DependencyChecker(
+            runner: runner,
+            fileSystem: fileSystem,
+            helperStatusProbe: FakeHelperServiceStatusProbe(state: .installedAndApproved),
+            bundledBinariesDirectory: helpers
+        ).checkAll()
+
+        // Homebrew is a delivery mechanism, not a dependency: with ntfs-3g
+        // shipped inside the app, its absence must not block readiness.
+        #expect(status.homebrewPrefix == nil)
+        #expect(status.ntfs3gInstalled)
+        #expect(status.isReady)
+    }
 }

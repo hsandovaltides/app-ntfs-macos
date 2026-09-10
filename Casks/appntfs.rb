@@ -27,11 +27,12 @@ cask "appntfs" do
       (cuenta gratuita, sin Developer ID ni notarización). Puede no abrir en
       algunas Macs distintas a la del autor. Ver el README del proyecto.
 
-      AppNTFS todavía necesita ntfs-3g-mac, que no está en homebrew-core:
-        brew tap gromgit/homebrew-fuse
-        brew install ntfs-3g-mac
+      ntfs-3g viene incluido dentro de la app: no hace falta el tap
+      gromgit/homebrew-fuse ni `brew install ntfs-3g-mac`. Se distribuye bajo
+      GPLv2; las licencias y el enlace al código fuente están en
+      AppNTFS.app/Contents/Resources/ntfs-3g/.
 
-      Y dos pasos manuales de aprobación en Ajustes del Sistema (una sola vez):
+      Quedan dos pasos manuales de aprobación en Ajustes del Sistema (una sola vez):
         1. macFUSE: kernel extension de terceros — necesita el paso de
            Recovery Mode (Utilidad de Seguridad de Arranque → Seguridad
            reducida). Ver el README del proyecto para el detalle.
