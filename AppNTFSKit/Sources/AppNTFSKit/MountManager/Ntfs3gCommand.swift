@@ -7,15 +7,25 @@ import Foundation
 /// exists regardless of link state.
 struct Ntfs3gCommand: PrivilegedMounting {
     private let runner: ProcessRunning
-    private let homebrewPrefix: String
+    private let binDirectory: String
 
-    init(runner: ProcessRunning, homebrewPrefix: String) {
+    /// Primary initialiser: the directory holding the three binaries, already
+    /// resolved by `DependencyChecker` to either the copies embedded in the app
+    /// bundle or a Homebrew install.
+    init(runner: ProcessRunning, binDirectory: String) {
         self.runner = runner
-        self.homebrewPrefix = homebrewPrefix
+        self.binDirectory = binDirectory
     }
 
-    private var optDirectory: String { "\(homebrewPrefix)/opt/ntfs-3g-mac" }
-    private var binDirectory: String { "\(optDirectory)/bin" }
+    /// Homebrew convenience form. `opt/ntfs-3g-mac` is Homebrew's stable
+    /// per-formula symlink, present regardless of link state.
+    init(runner: ProcessRunning, homebrewPrefix: String) {
+        self.init(runner: runner, binDirectory: Self.homebrewBinDirectory(prefix: homebrewPrefix))
+    }
+
+    static func homebrewBinDirectory(prefix: String) -> String {
+        "\(prefix)/opt/ntfs-3g-mac/bin"
+    }
 
     var executablePath: String { "\(binDirectory)/ntfs-3g" }
     var probeExecutablePath: String { "\(binDirectory)/ntfs-3g.probe" }
@@ -83,11 +93,39 @@ struct Ntfs3gCommand: PrivilegedMounting {
         try await runner.run(executable: ntfs3gExecutablePath, arguments: [devicePath, mountPath, "-o", options])
     }
 
+    /// Arguments `ntfsfix` is always invoked with, on top of the device path.
+    ///
+    /// `-d` is not optional here. `ntfsfix` rewrites the dirty flag on every
+    /// run and the flag it writes is chosen by this branch (ntfsfix.c):
+    ///
+    ///     if (opt.clear_dirty) vol->flags &= ~VOLUME_IS_DIRTY;
+    ///     else                 vol->flags |=  VOLUME_IS_DIRTY;
+    ///     ntfs_volume_write_flags(vol, vol->flags);
+    ///
+    /// So without `-d` the "repair and retry" flow *marks the volume dirty* —
+    /// the exact condition that makes `ntfs-3g` refuse a read-write mount, and
+    /// the most common reason a user reaches for repair in the first place.
+    /// The repair itself (`fix_mount`, `check_alternate_boot`) runs either
+    /// way, so `-d` only ever adds the flag clear.
+    ///
+    /// A volume left dirty by Windows *hibernation* is a different problem
+    /// that `ntfsfix` cannot solve at all — that needs the `remove_hiberfile`
+    /// mount option or a full Windows shutdown.
+    ///
+    /// Kept in sync with `HelperService.fix`, which rebuilds this list
+    /// helper-side: the app sends only paths over XPC, never arguments, so the
+    /// helper can never be talked into running `ntfsfix` with attacker-chosen
+    /// flags.
+    static let fixArguments = ["-d"]
+
     /// `PrivilegedMounting` conformance used only when no privileged helper is
     /// configured (unit tests, mainly) — real fixes always go through
     /// `PrivilegedHelperMounter` (AppNTFS/Helper/), same reasoning as
     /// `probeReadWrite`/`mountReadWrite`.
     func fix(ntfsfixExecutablePath: String, devicePath: String) async throws -> ProcessResult {
-        try await runner.run(executable: ntfsfixExecutablePath, arguments: [devicePath])
+        try await runner.run(
+            executable: ntfsfixExecutablePath,
+            arguments: Self.fixArguments + [devicePath]
+        )
     }
 }

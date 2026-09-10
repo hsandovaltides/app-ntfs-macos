@@ -103,7 +103,18 @@ final class HelperService: NSObject, AppNTFSHelperProtocol, @unchecked Sendable 
         }
         Task {
             do {
-                let result = try await runner.run(executable: ntfsfixExecutablePath, arguments: [devicePath])
+                // `-d` clears the volume dirty flag. It is mandatory, not a
+                // tuning knob: `ntfsfix` rewrites that flag on every run and
+                // *sets* it when `-d` is absent, which would leave the volume
+                // in exactly the state that blocks a read-write mount. See
+                // `Ntfs3gCommand.fixArguments` for the upstream branch this
+                // mirrors. Built here rather than accepted over XPC so the
+                // helper can never be asked to run `ntfsfix` with
+                // caller-chosen flags.
+                let result = try await runner.run(
+                    executable: ntfsfixExecutablePath,
+                    arguments: ["-d", devicePath]
+                )
                 reply(HelperOperationResult(
                     exitCode: result.exitCode,
                     standardOutput: result.standardOutput,

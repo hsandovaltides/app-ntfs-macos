@@ -1,0 +1,555 @@
+<title>Arquitectura de permisos de AppNTFS</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=JetBrains+Mono:wght@400;500;700&display=swap">
+
+<style>
+:root{
+  --ground:#F6F7F9; --surface:#FFFFFF; --surface-2:#EDF1F3; --surface-3:#E4EAED;
+  --ink:#14181D; --ink-2:#4A545F; --ink-3:#7B8691;
+  --rule:#DCE2E6; --rule-strong:#C3CCD2;
+  --accent:#0E7C6B; --accent-ink:#0A5C4F; --accent-soft:#E1F1ED;
+  --warn:#9A5A08; --warn-soft:#F9EFDD;
+  --crit:#A0342A; --crit-soft:#F9E8E5;
+  --shadow:0 1px 2px rgba(20,24,29,.05), 0 8px 24px -16px rgba(20,24,29,.25);
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --sans:"Archivo",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  --serif:"Source Serif 4",Georgia,"Times New Roman",serif;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --ground:#0E1216; --surface:#151A20; --surface-2:#1C232A; --surface-3:#242D36;
+    --ink:#E9EEF2; --ink-2:#A5B0BA; --ink-3:#727E89;
+    --rule:#252E37; --rule-strong:#36414C;
+    --accent:#3FBFA6; --accent-ink:#6FD6C1; --accent-soft:#102F2A;
+    --warn:#D79B45; --warn-soft:#2C2314;
+    --crit:#E08072; --crit-soft:#2F1B18;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.8);
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0E1216; --surface:#151A20; --surface-2:#1C232A; --surface-3:#242D36;
+  --ink:#E9EEF2; --ink-2:#A5B0BA; --ink-3:#727E89;
+  --rule:#252E37; --rule-strong:#36414C;
+  --accent:#3FBFA6; --accent-ink:#6FD6C1; --accent-soft:#102F2A;
+  --warn:#D79B45; --warn-soft:#2C2314;
+  --crit:#E08072; --crit-soft:#2F1B18;
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.8);
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--ground); color:var(--ink);
+  font-family:var(--serif); font-size:1.0625rem; line-height:1.7;
+  -webkit-font-smoothing:antialiased;
+}
+.shell{max-width:1240px; margin:0 auto; padding:0 clamp(1.25rem,4vw,3rem)}
+
+/* ---------- masthead ---------- */
+.masthead{border-bottom:1px solid var(--rule); padding:clamp(3rem,7vw,5.5rem) 0 clamp(2rem,4vw,3rem)}
+.eyebrow{
+  font-family:var(--mono); font-size:.72rem; font-weight:500; letter-spacing:.14em;
+  text-transform:uppercase; color:var(--accent); margin:0 0 1.4rem;
+  display:flex; flex-wrap:wrap; gap:.5rem 1.1rem; align-items:center;
+}
+.eyebrow span{color:var(--ink-3)}
+h1{
+  font-family:var(--sans); font-weight:700; letter-spacing:-.025em; line-height:1.05;
+  font-size:clamp(2.3rem,6vw,4rem); margin:0 0 1.2rem; text-wrap:balance; max-width:20ch;
+}
+.standfirst{
+  font-size:clamp(1.1rem,2vw,1.3rem); line-height:1.6; color:var(--ink-2);
+  max-width:60ch; margin:0; font-weight:400;
+}
+.standfirst strong{color:var(--ink); font-weight:600}
+
+/* ---------- verdict strip ---------- */
+.verdict{
+  display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:1px;
+  background:var(--rule); border:1px solid var(--rule); border-radius:3px;
+  margin:clamp(2.2rem,4vw,3rem) 0 0; overflow:hidden;
+}
+.verdict > div{background:var(--surface); padding:1.15rem 1.25rem}
+.verdict dt{
+  font-family:var(--mono); font-size:.68rem; letter-spacing:.12em; text-transform:uppercase;
+  color:var(--ink-3); margin:0 0 .5rem;
+}
+.verdict dd{
+  margin:0; font-family:var(--sans); font-weight:600; font-size:1.7rem;
+  letter-spacing:-.02em; font-variant-numeric:tabular-nums; line-height:1.1;
+}
+.verdict dd small{display:block; font-family:var(--serif); font-size:.85rem; font-weight:400; color:var(--ink-2); letter-spacing:0; margin-top:.35rem; line-height:1.45}
+.v-good dd{color:var(--accent)}
+.v-warn dd{color:var(--warn)}
+.v-crit dd{color:var(--crit)}
+
+/* ---------- layout ---------- */
+.body-grid{display:block; padding:clamp(2.5rem,5vw,4rem) 0 6rem}
+@media (min-width:1080px){
+  .body-grid{display:grid; grid-template-columns:210px minmax(0,1fr); gap:clamp(2rem,5vw,4.5rem); align-items:start}
+}
+nav.toc{display:none}
+@media (min-width:1080px){
+  nav.toc{display:block; position:sticky; top:2rem; font-family:var(--mono); font-size:.75rem; line-height:1.5}
+  nav.toc p{margin:0 0 .9rem; letter-spacing:.12em; text-transform:uppercase; color:var(--ink-3); font-size:.68rem}
+  nav.toc a{display:block; padding:.42rem 0 .42rem .8rem; color:var(--ink-2); text-decoration:none; border-left:2px solid var(--rule)}
+  nav.toc a:hover,nav.toc a:focus-visible{color:var(--accent); border-left-color:var(--accent)}
+  nav.toc a b{font-weight:500; color:var(--ink-3); margin-right:.5em}
+}
+
+article{min-width:0; display:flex; flex-direction:column; gap:clamp(2.6rem,5vw,4rem)}
+section{display:flex; flex-direction:column; gap:1.15rem; scroll-margin-top:2rem}
+article > section > *{max-width:70ch}
+article > section > .wide,
+article > section > figure,
+article > section > .table-wrap{max-width:none}
+
+h2{
+  font-family:var(--sans); font-weight:600; letter-spacing:-.02em; line-height:1.15;
+  font-size:clamp(1.55rem,2.8vw,2.05rem); margin:0; text-wrap:balance;
+  padding-top:1.6rem; border-top:2px solid var(--ink); max-width:none;
+}
+h2 .num{
+  font-family:var(--mono); font-size:.68rem; font-weight:500; letter-spacing:.14em;
+  color:var(--accent); display:block; margin-bottom:.7rem; text-transform:uppercase;
+}
+h3{
+  font-family:var(--sans); font-weight:600; font-size:1.13rem; letter-spacing:-.01em;
+  margin:.9rem 0 0; line-height:1.35; text-wrap:balance;
+}
+p{margin:0}
+a{color:var(--accent-ink); text-underline-offset:2px}
+a:focus-visible,button:focus-visible{outline:2px solid var(--accent); outline-offset:2px; border-radius:2px}
+code{
+  font-family:var(--mono); font-size:.855em; background:var(--surface-2);
+  border:1px solid var(--rule); border-radius:3px; padding:.1em .35em; color:var(--ink);
+  word-break:break-word;
+}
+strong{font-weight:600}
+ul{margin:0; padding-left:1.25rem; display:flex; flex-direction:column; gap:.6rem}
+li::marker{color:var(--ink-3)}
+
+/* ---------- chips ---------- */
+.chip{
+  display:inline-block; font-family:var(--mono); font-size:.66rem; font-weight:500;
+  letter-spacing:.08em; text-transform:uppercase; padding:.24em .55em; border-radius:3px;
+  white-space:nowrap; border:1px solid transparent; vertical-align:middle;
+}
+.c-ok{background:var(--accent-soft); color:var(--accent-ink); border-color:var(--accent)}
+.c-warn{background:var(--warn-soft); color:var(--warn); border-color:var(--warn)}
+.c-crit{background:var(--crit-soft); color:var(--crit); border-color:var(--crit)}
+.c-mute{background:var(--surface-2); color:var(--ink-3); border-color:var(--rule-strong)}
+
+/* ---------- tables ---------- */
+.table-wrap{overflow-x:auto; border:1px solid var(--rule); border-radius:3px; background:var(--surface)}
+table{border-collapse:collapse; width:100%; font-family:var(--sans); font-size:.875rem; line-height:1.45}
+th,td{text-align:left; padding:.72rem .85rem; border-bottom:1px solid var(--rule); vertical-align:top}
+thead th{
+  font-family:var(--mono); font-size:.66rem; letter-spacing:.1em; text-transform:uppercase;
+  color:var(--ink-3); font-weight:500; background:var(--surface-2); white-space:nowrap;
+  position:sticky; top:0;
+}
+tbody tr:last-child td{border-bottom:none}
+tbody tr:hover{background:var(--surface-2)}
+td code{font-size:.8em}
+.num-col{font-family:var(--mono); font-variant-numeric:tabular-nums; color:var(--ink-3); width:2.4rem; font-size:.8rem}
+.tick{font-family:var(--sans); font-weight:600; text-align:center; white-space:nowrap}
+.t-no{color:var(--accent)}
+.t-yes{color:var(--crit)}
+.t-part{color:var(--warn)}
+caption{
+  caption-side:bottom; text-align:left; padding:.75rem .85rem; font-size:.8rem;
+  color:var(--ink-3); font-family:var(--sans); line-height:1.5; border-top:1px solid var(--rule);
+}
+
+/* ---------- gate chain ---------- */
+.chain{background:var(--surface); border:1px solid var(--rule); border-radius:3px; padding:1.5rem 1.4rem; margin:0}
+.chain + .chain{margin-top:1rem}
+.chain-head{
+  display:flex; flex-wrap:wrap; gap:.6rem 1rem; align-items:baseline; margin-bottom:1.1rem;
+  font-family:var(--mono); font-size:.7rem; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-3);
+}
+.chain-head b{font-family:var(--sans); font-size:.95rem; letter-spacing:-.01em; text-transform:none; color:var(--ink); font-weight:600}
+.gates{display:flex; flex-wrap:wrap; gap:.45rem; align-items:stretch}
+.gate{
+  font-family:var(--mono); font-size:.72rem; line-height:1.35; padding:.5rem .65rem;
+  border:1px solid var(--rule-strong); border-radius:3px; background:var(--surface-2);
+  color:var(--ink-2); flex:0 1 auto; max-width:15rem;
+}
+.gate b{display:block; font-weight:700; color:var(--ink); font-size:.68rem; letter-spacing:.06em; margin-bottom:.25rem}
+.gate.blocked{background:var(--crit-soft); border-color:var(--crit); color:var(--crit)}
+.gate.blocked b{color:var(--crit)}
+.gate.soft{background:var(--warn-soft); border-color:var(--warn); color:var(--warn)}
+.gate.soft b{color:var(--warn)}
+.gate.gone{background:var(--accent-soft); border-color:var(--accent); color:var(--accent-ink)}
+.gate.gone b{color:var(--accent-ink)}
+.gate.gone s{opacity:.55; text-decoration-thickness:1px}
+
+/* ---------- callouts ---------- */
+.note{
+  border-left:3px solid var(--accent); background:var(--accent-soft);
+  padding:1rem 1.15rem; border-radius:0 3px 3px 0; font-size:.98rem; line-height:1.6;
+  display:flex; flex-direction:column; gap:.6rem;
+}
+.note.caution{border-left-color:var(--warn); background:var(--warn-soft)}
+.note.stop{border-left-color:var(--crit); background:var(--crit-soft)}
+.note b.label{
+  font-family:var(--mono); font-size:.66rem; letter-spacing:.12em; text-transform:uppercase;
+  color:var(--accent-ink); display:block;
+}
+.note.caution b.label{color:var(--warn)}
+.note.stop b.label{color:var(--crit)}
+blockquote{
+  margin:0; padding:.2rem 0 .2rem 1.15rem; border-left:2px solid var(--rule-strong);
+  font-style:italic; color:var(--ink-2); font-size:.98rem;
+}
+blockquote cite{
+  display:block; font-style:normal; font-family:var(--mono); font-size:.7rem;
+  letter-spacing:.08em; color:var(--ink-3); margin-top:.6rem; text-transform:uppercase;
+}
+
+/* ---------- tiers ---------- */
+.tier{
+  background:var(--surface); border:1px solid var(--rule); border-left:3px solid var(--accent);
+  border-radius:0 3px 3px 0; padding:1.4rem 1.5rem; display:flex; flex-direction:column; gap:.85rem;
+}
+.tier.t1{border-left-color:var(--warn)}
+.tier.t2{border-left-color:var(--crit)}
+.tier-head{display:flex; flex-wrap:wrap; gap:.5rem .9rem; align-items:baseline}
+.tier-n{
+  font-family:var(--mono); font-size:.68rem; font-weight:700; letter-spacing:.14em;
+  text-transform:uppercase; color:var(--accent);
+}
+.tier.t1 .tier-n{color:var(--warn)}
+.tier.t2 .tier-n{color:var(--crit)}
+.tier h3{margin:0; font-size:1.2rem; flex:1 1 14rem}
+.tier .meta{font-family:var(--mono); font-size:.7rem; color:var(--ink-3); letter-spacing:.05em}
+.tier ul{font-size:.95rem}
+
+/* ---------- defects ---------- */
+.defect{
+  background:var(--surface); border:1px solid var(--rule); border-radius:3px;
+  padding:1.1rem 1.25rem; display:flex; flex-direction:column; gap:.55rem; font-size:.96rem;
+}
+.defect-head{display:flex; flex-wrap:wrap; gap:.55rem; align-items:center}
+.defect-head h3{margin:0; font-size:1rem; flex:1 1 16rem}
+.defect .fix{font-size:.92rem; color:var(--ink-2); border-top:1px dashed var(--rule-strong); padding-top:.6rem}
+.defect .fix b{font-family:var(--mono); font-size:.66rem; letter-spacing:.1em; text-transform:uppercase; color:var(--accent-ink); margin-right:.5em}
+.stack{display:flex; flex-direction:column; gap:.85rem}
+
+footer{border-top:1px solid var(--rule); padding:2rem 0 3rem; font-family:var(--mono); font-size:.73rem; color:var(--ink-3); line-height:1.7}
+@media (prefers-reduced-motion:reduce){*{animation:none!important; transition:none!important}}
+</style>
+
+<div class="shell">
+  <header class="masthead">
+    <p class="eyebrow">Análisis de arquitectura <span>·</span> <span>app-ntfs-macos</span> <span>·</span> <span>rama feature/upgrades</span> <span>·</span> <span>septiembre 2026</span></p>
+    <h1>Arquitectura de permisos de AppNTFS</h1>
+    <p class="standfirst">Hoy el usuario atraviesa <strong>ocho pasos manuales y dos reinicios</strong> antes de poder escribir en un disco NTFS. Seis de esos pasos no son requisitos técnicos de NTFS: son consecuencia del backend elegido. FSKit los elimina, y el único candado real que queda cuesta 99 dólares al año.</p>
+
+    <dl class="verdict">
+      <div class="v-crit"><dt>Pasos manuales hoy</dt><dd>8<small>más 2 reinicios y un aviso de Gatekeeper</small></dd></div>
+      <div class="v-good"><dt>Eliminables con FSKit</dt><dd>7<small>queda un único interruptor de activación</small></dd></div>
+      <div class="v-warn"><dt>Permisos estructurales</dt><dd>0<small>ninguno es intrínseco a NTFS</small></dd></div>
+      <div class="v-warn"><dt>Coste del desbloqueo</dt><dd>99 $<small>Apple Developer Program, anual</small></dd></div>
+    </dl>
+  </header>
+
+  <div class="body-grid">
+    <nav class="toc" aria-label="Índice">
+      <p>Contenido</p>
+      <a href="#inventario"><b>01</b>Inventario</a>
+      <a href="#anatomia"><b>02</b>Anatomía</a>
+      <a href="#fskit"><b>03</b>El hallazgo</a>
+      <a href="#comparativa"><b>04</b>Comparativa</a>
+      <a href="#roadmap"><b>05</b>Roadmap</a>
+      <a href="#defectos"><b>06</b>Defectos</a>
+      <a href="#decision"><b>07</b>La decisión</a>
+      <a href="#riesgos"><b>08</b>Incertidumbres</a>
+    </nav>
+
+    <article>
+
+    <!-- 01 -->
+    <section id="inventario">
+      <h2><span class="num">01 — Punto de partida</span>El coste manual, paso a paso</h2>
+      <p>Antes de decidir qué arreglar conviene separar lo que NTFS exige de lo que exige <em>nuestra</em> forma de montarlo. La columna «impuesto por» hace esa distinción: ninguna fila dice «NTFS».</p>
+
+      <div class="table-wrap">
+        <table>
+          <caption>Los ocho pasos que hoy separan a un usuario nuevo de un disco escribible. Ninguno es un requisito del sistema de archivos; todos derivan de la cadena macFUSE‑kext + ntfs‑3g + helper root.</caption>
+          <thead>
+            <tr><th class="num-col">#</th><th>Paso manual</th><th>Impuesto por</th><th>Se elimina en</th></tr>
+          </thead>
+          <tbody>
+            <tr><td class="num-col">1</td><td>Instalar Homebrew</td><td>Decisión de empaquetado</td><td><span class="chip c-ok">Nivel 0</span></td></tr>
+            <tr><td class="num-col">2</td><td><code>brew install --cask macfuse</code></td><td>Backend kext</td><td><span class="chip c-warn">Nivel 1</span></td></tr>
+            <tr><td class="num-col">3</td><td><code>brew tap gromgit/fuse</code> + <code>ntfs-3g-mac</code></td><td>Decisión de empaquetado</td><td><span class="chip c-ok">Nivel 0</span></td></tr>
+            <tr><td class="num-col">4</td><td>Recovery → Seguridad reducida → permitir kexts <em>(reinicio 1)</em></td><td>Kext en Apple Silicon</td><td><span class="chip c-warn">Nivel 1</span></td></tr>
+            <tr><td class="num-col">5</td><td>Aprobar el desarrollador de macFUSE <em>(reinicio 2)</em></td><td>Kext en Apple Silicon</td><td><span class="chip c-warn">Nivel 1</span></td></tr>
+            <tr><td class="num-col">6</td><td>Aprobar el helper en Elementos de inicio</td><td><code>/dev/disk*</code> es <code>root:operator</code></td><td><span class="chip c-crit">Nivel 2</span></td></tr>
+            <tr><td class="num-col">7</td><td>Arrastrar <code>AppNTFSHelper</code> a Acceso Total al Disco</td><td>TCC sobre <code>/dev/rdisk*</code></td><td><span class="chip c-crit">Nivel 2</span></td></tr>
+            <tr><td class="num-col">8</td><td>Saltarse el aviso de «desarrollador no identificado»</td><td>Sin Developer ID ni notarización</td><td><span class="chip c-crit">Cuenta de pago</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>Los pasos 4 y 5 son los más caros con diferencia: exigen reiniciar en Recovery, entender qué es «seguridad reducida» y reiniciar una segunda vez. Es el punto donde un usuario no técnico abandona.</p>
+    </section>
+
+    <!-- 02 -->
+    <section id="anatomia">
+      <h2><span class="num">02 — Anatomía</span>Qué exige realmente cada permiso</h2>
+
+      <h3>Aprobación de extensión de kernel + Seguridad reducida</h3>
+      <p>Solo lo pide el <em>backend kext</em> de macFUSE. En Apple Silicon una kext de terceros obliga a bajar la política de arranque desde Recovery, aprobar al desarrollador y reiniciar dos veces. No hay API para automatizarlo — ni debería haberla. La única salida es no usar una kext.</p>
+
+      <h3>Acceso Total al Disco (TCC)</h3>
+      <p>Abrir <code>/dev/disk*</code> o <code>/dev/rdisk*</code> está bloqueado por TCC <strong>con independencia de los permisos Unix y con independencia de ser root</strong>. Lo confirmé en esta máquina: <code>dd if=/dev/rdisk0</code> devuelve <em>Operation not permitted</em>, que es <code>EPERM</code> — la firma de TCC — y no <code>EACCES</code>, que sería un problema de permisos Unix.</p>
+      <p>El permiso se concede <strong>por binario</strong>, y un demonio de <code>launchd</code> no tiene proceso padre responsable, así que necesita su propia entrada. De ahí el paso más incómodo de todo el flujo: pedirle al usuario que arrastre a la lista un ejecutable escondido dentro de <code>Contents/MacOS/</code>.</p>
+
+      <h3>Helper privilegiado y aprobación en Elementos de inicio</h3>
+      <p>Los nodos de bloque son <code>brw-r----- root:operator</code>, y el usuario no pertenece al grupo <code>operator</code>. Montar requiere root, de ahí el <code>SMAppService.daemon</code> más XPC con validación de firma. La arquitectura está bien resuelta —doble capa: <code>SecCodeCheckValidity</code> en el helper y lista blanca de ejecutables, rutas y opciones en <code>HelperRequestValidation</code>— pero el coste es una aprobación más para el usuario.</p>
+
+      <h3>Gatekeeper</h3>
+      <p>El proyecto firma con un equipo personal gratuito (<code>4AKKTNTXC4</code>). Sin Developer ID no hay notarización, y en otra máquina el aviso de «desarrollador no identificado» aparece, la cask necesita <code>xattr -dr com.apple.quarantine</code> en el <em>postflight</em>, y —más grave— la validación de firma del helper y el registro del LaunchDaemon pueden fallar fuera del Mac donde se compiló.</p>
+
+      <h3>Homebrew, tap y fórmula</h3>
+      <p>Puramente empaquetado. <code>ntfs-3g</code> de homebrew‑core es solo Linux, de ahí el tap <code>gromgit/homebrew-fuse</code>. Nada obliga a que el usuario haga esto a mano.</p>
+    </section>
+
+    <!-- 03 -->
+    <section id="fskit">
+      <h2><span class="num">03 — El hallazgo decisivo</span>FSKit no necesita Acceso Total al Disco</h2>
+      <p>La cabecera <code>FSResource.h</code> del SDK de macOS 26 contiene la frase que reordena todo el análisis:</p>
+
+      <blockquote>
+        Solo el demonio <code>fskitd</code> crea instancias «reales» (no proxy) de esta clase. Las aplicaciones cliente y los demonios crean objetos proxy para las peticiones, y <code>fskitd</code> abre el dispositivo subyacente durante el procesamiento de la petición.
+        <cite>FSResource.h — SDK de macOS 26</cite>
+      </blockquote>
+
+      <p>Es decir: <strong>el módulo de sistema de archivos nunca abre <code>/dev/rdisk*</code></strong>. Lo hace <code>fskitd</code> en su nombre. Eso borra de un plumazo la necesidad de Acceso Total al Disco <em>y</em> la necesidad de un helper root para acceder al dispositivo.</p>
+
+      <p>No es una vía experimental. En esta máquina, <code>pluginkit -mv -p com.apple.fskit.fsmodule</code> muestra que Apple ya ha migrado <strong>msdos, exfat y ftp</strong> a módulos FSKit <code>.appex</code>, y que <code>FSKitModuleManagement.appex</code> provee la interfaz de activación en Ajustes del Sistema. NTFS sigue siendo el driver heredado de solo lectura en <code>/System/Library/Filesystems/ntfs.fs</code> — es el hueco que queda por ocupar.</p>
+
+      <div class="note">
+        <b class="label">Precedente que resuelve las dudas abiertas</b>
+        <p>El proyecto <code>HuanchuanTech/xntfs</code> ya empaqueta <code>libntfs-3g</code> estático dentro de una extensión FSKit, puenteando <code>FSBlockDeviceResource</code> desde C. Su documentación cierra dos preguntas que quedaban abiertas: declarar los <code>FSMediaTypes</code> de NTFS hace que <strong>DiskArbitration monte automáticamente en lectura‑escritura sin que la app esté corriendo</strong>, exactamente igual que exFAT; y <code>FSProbeOrder</code> es lo que da prioridad sobre el driver NTFS de solo lectura del sistema.</p>
+      </div>
+
+      <p>Las implicaciones para el código actual son grandes. Si el sistema automonta directamente en lectura‑escritura, desaparece toda la coreografía de <code>MountManager</code>: el <em>desmontar el montaje nativo de solo lectura → sondear → volver a montar</em>, el guardián <code>handledByUs</code>, la deduplicación <code>inFlight</code>, el <em>fallback</em> <code>restoreReadOnly</code>. La app deja de ser un montador y pasa a ser lo que debería: un panel de estado y ajustes.</p>
+
+      <div class="note stop">
+        <b class="label">Y aquí está el candado</b>
+        <p>Cargar el módulo exige el <em>entitlement</em> restringido <code>com.apple.developer.fskit.fsmodule</code>. AMFI se niega a cargar la extensión si no viene autorizado por un perfil de aprovisionamiento, y ese perfil requiere activar la capacidad <strong>FSKit File System Module</strong> sobre el App ID en el portal de Apple Developer. Un equipo personal gratuito no puede hacerlo.</p>
+      </div>
+    </section>
+
+    <!-- 04 -->
+    <section id="comparativa">
+      <h2><span class="num">04 — Comparativa</span>Tres arquitecturas posibles</h2>
+
+      <div class="table-wrap">
+        <table>
+          <caption>Verde = el usuario no lo ve. Rojo = el usuario tiene que actuar. La columna FSKit es casi toda verde, y ese es el argumento central de este informe.</caption>
+          <thead>
+            <tr><th>Dimensión</th><th>macFUSE + kext <em>(hoy)</em></th><th>fuse‑t</th><th>Módulo FSKit</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Extensión de kernel</td><td class="tick t-yes">Sí</td><td class="tick t-no">No</td><td class="tick t-no">No</td></tr>
+            <tr><td>Recovery Mode + 2 reinicios</td><td class="tick t-yes">Sí</td><td class="tick t-no">No</td><td class="tick t-no">No</td></tr>
+            <tr><td>Acceso Total al Disco</td><td class="tick t-yes">Sí</td><td class="tick t-part">Probable</td><td class="tick t-no">No</td></tr>
+            <tr><td>Helper root + XPC</td><td class="tick t-yes">Sí</td><td class="tick t-yes">Sí</td><td class="tick t-no">No</td></tr>
+            <tr><td>Dependencia de Homebrew</td><td class="tick t-yes">Sí</td><td class="tick t-part">Cask propia</td><td class="tick t-no">No</td></tr>
+            <tr><td>Automontaje del sistema</td><td class="tick t-yes">No</td><td class="tick t-yes">No</td><td class="tick t-no">Sí</td></tr>
+            <tr><td>Requiere la app corriendo</td><td class="tick t-yes">Sí</td><td class="tick t-yes">Sí</td><td class="tick t-no">No</td></tr>
+            <tr><td>Aprobaciones del usuario</td><td class="tick t-yes">3 + Gatekeeper</td><td class="tick t-part">2 + Gatekeeper</td><td class="tick t-no">1 interruptor</td></tr>
+            <tr><td>Licencia del backend</td><td>GPLv2 <span class="chip c-ok">libre</span></td><td>No comercial <span class="chip c-warn">restrictiva</span></td><td>GPLv2 <span class="chip c-ok">libre</span></td></tr>
+            <tr><td>Apple Developer Program</td><td class="tick t-no">No exigido</td><td class="tick t-no">No exigido</td><td class="tick t-yes">Obligatorio</td></tr>
+            <tr><td>macOS mínimo</td><td>10.9+</td><td>11+</td><td>15.4+ <em>(maduro en 26)</em></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>La cadena de fricción, visualmente</h3>
+      <figure class="wide" style="margin:0">
+        <div class="chain">
+          <p class="chain-head"><b>Hoy — macFUSE con backend kext</b> <span>8 puertas</span></p>
+          <div class="gates">
+            <div class="gate blocked"><b>01</b>Instalar Homebrew</div>
+            <div class="gate blocked"><b>02</b>Cask macFUSE</div>
+            <div class="gate blocked"><b>03</b>Tap + ntfs‑3g‑mac</div>
+            <div class="gate blocked"><b>04</b>Recovery + reinicio</div>
+            <div class="gate blocked"><b>05</b>Aprobar kext + reinicio</div>
+            <div class="gate blocked"><b>06</b>Aprobar helper</div>
+            <div class="gate blocked"><b>07</b>Acceso Total al Disco</div>
+            <div class="gate blocked"><b>08</b>Gatekeeper</div>
+          </div>
+        </div>
+        <div class="chain">
+          <p class="chain-head"><b>Nivel 1 — fuse‑t, sin kext, con binarios embebidos</b> <span>3 puertas</span></p>
+          <div class="gates">
+            <div class="gate gone"><b>01–03</b><s>Homebrew y fórmulas</s></div>
+            <div class="gate gone"><b>04–05</b><s>Recovery y kext</s></div>
+            <div class="gate soft"><b>06</b>Aprobar helper</div>
+            <div class="gate soft"><b>07</b>Acceso Total al Disco</div>
+            <div class="gate soft"><b>08</b>Gatekeeper</div>
+          </div>
+        </div>
+        <div class="chain">
+          <p class="chain-head"><b>Nivel 2 — módulo FSKit firmado y notarizado</b> <span>1 puerta</span></p>
+          <div class="gates">
+            <div class="gate gone"><b>01–05</b><s>Dependencias externas y kext</s></div>
+            <div class="gate gone"><b>06–07</b><s>Helper root y TCC</s></div>
+            <div class="gate gone"><b>08</b><s>Gatekeeper</s></div>
+            <div class="gate soft"><b>Único</b>Activar la extensión en Ajustes</div>
+          </div>
+        </div>
+      </figure>
+    </section>
+
+    <!-- 05 -->
+    <section id="roadmap">
+      <h2><span class="num">05 — Plan</span>Tres niveles, en orden de dependencia</h2>
+      <p>Los niveles están numerados porque son una secuencia real: el Nivel 0 no depende de nada, el Nivel 1 se apoya en el empaquetado del 0, y el Nivel 2 necesita la cuenta de pago que también arregla Gatekeeper.</p>
+
+      <div class="stack">
+        <div class="tier">
+          <div class="tier-head">
+            <span class="tier-n">Nivel 0</span>
+            <h3>Empaquetar las dependencias y afinar la guía</h3>
+            <span class="meta">sin cuenta nueva · esfuerzo bajo</span>
+          </div>
+          <p>Elimina tres pasos manuales y corrige los defectos verificados sin tocar la arquitectura.</p>
+          <ul>
+            <li><strong>Embeber <code>ntfs-3g</code>, <code>ntfs-3g.probe</code> y <code>ntfsfix</code> dentro del <code>.app</code></strong> y ampliar el prefijo permitido en <code>HelperRequestValidation</code> a la ruta del bundle. Adiós a los pasos 1 y 3. Al ser GPLv2, hay que acompañarlo del código fuente y la licencia.</li>
+            <li><strong>Añadir <code>depends_on formula: "gromgit/fuse/ntfs-3g-mac"</code> a la cask</strong> como medida puente si embeber se retrasa.</li>
+            <li><strong>Corregir los enlaces profundos</strong> a Ajustes: el ancla <code>com.apple.preference.security</code> es de la era Ventura; en macOS 26 conviene <code>x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles</code>, con el antiguo como respaldo.</li>
+            <li><strong>Botón «Instalar dependencias»</strong> que abra Terminal con el comando ya escrito, en vez de solo copiarlo al portapapeles.</li>
+            <li><strong>Cachear <code>checkAll()</code></strong> con un TTL corto — hoy se ejecuta en cada intento de montaje y arrastra un <code>kmutil showloaded</code> por volumen.</li>
+            <li><strong>Resolver el prefijo con <code>brew --prefix</code></strong> en lugar de asumir <code>/opt/homebrew</code> o <code>/usr/local</code>.</li>
+          </ul>
+        </div>
+
+        <div class="tier t1">
+          <div class="tier-head">
+            <span class="tier-n">Nivel 1</span>
+            <h3>Sustituir macFUSE por fuse‑t</h3>
+            <span class="meta">sin cuenta nueva · esfuerzo medio · revisar licencia</span>
+          </div>
+          <p>El mayor salto de usabilidad disponible sin cuenta de pago: fuse‑t no lleva kext, así que <strong>desaparecen los dos reinicios y las dos aprobaciones de Recovery</strong>. Está mantenido activamente (1.2.7, junio de 2026) y en macOS 26 usa un backend FSKit en lugar de bucles NFS o SMB.</p>
+          <ul>
+            <li>Hay que recompilar <code>ntfs-3g</code> contra fuse‑t (existe el <em>fork</em> <code>macos-fuse-t/ntfs-3g</code>).</li>
+            <li>El helper y el Acceso Total al Disco probablemente sobreviven: se sigue abriendo el dispositivo de bloque directamente.</li>
+            <li>Con los backends NFS o SMB en versiones anteriores a macOS 26 puede aparecer un permiso nuevo de «volúmenes de red»; el backend FSKit lo evita.</li>
+          </ul>
+          <div class="note caution">
+            <b class="label">Aviso de licencia — verificado hoy</b>
+            <p>La distribución binaria de fuse‑t es <strong>gratuita solo para uso no comercial</strong>. Empaquetarla con software comercial exige una licencia comercial de sus autores. Si AppNTFS es y seguirá siendo un proyecto libre y gratuito, encaja; si hay cualquier intención de monetización, este nivel queda descartado y conviene saltar directamente al Nivel 2.</p>
+          </div>
+        </div>
+
+        <div class="tier t2">
+          <div class="tier-head">
+            <span class="tier-n">Nivel 2</span>
+            <h3>Publicar un módulo FSKit de NTFS</h3>
+            <span class="meta">requiere cuenta de pago · esfuerzo alto · es el destino</span>
+          </div>
+          <p>Una extensión <code>.appex</code> que envuelve <code>libntfs-3g</code> sobre <code>FSBlockDeviceResource</code>. Elimina la kext, Recovery Mode, el Acceso Total al Disco, Homebrew, el helper privilegiado, el XPC <em>y</em> toda la coreografía de desmontar‑sondear‑remontar. El usuario activa un interruptor en Ajustes del Sistema y a partir de ahí los discos NTFS se montan solos en lectura‑escritura, aunque la app no esté abierta.</p>
+          <ul>
+            <li><strong>Requisito de entrada:</strong> capacidad <em>FSKit File System Module</em> sobre el App ID, que exige el Apple Developer Program de pago.</li>
+            <li><strong>Trabajo real:</strong> puentear <code>libntfs-3g</code> a <code>FSVolume</code> y <code>FSItem</code>. El precedente <code>xntfs</code> demuestra que es viable y sirve de mapa.</li>
+            <li><strong>Detalle operativo:</strong> <code>mount -F -t</code> falla con «Probing resource: Permission denied»; la ruta que funciona desde consola es <code>diskutil mount</code>, vía <code>diskarbitrationd</code>.</li>
+            <li><strong>Montaje manual desde la app:</strong> no es posible en macOS 26 para un módulo de terceros; llega en macOS 27 con <code>com.apple.developer.fskit.mount</code> y <code>FSClient.mountSingleVolume</code>, restringido a <code>/Volumes</code>. Mientras tanto, el automontaje cubre el caso de uso real.</li>
+            <li><strong>Coste de compatibilidad:</strong> sube el mínimo a macOS 15.4, en la práctica macOS 26. Puede justificar mantener el camino actual como respaldo para sistemas anteriores.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- 06 -->
+    <section id="defectos">
+      <h2><span class="num">06 — Hallazgos</span>Defectos concretos verificados en el código</h2>
+      <p>Encontrados al revisar el árbol actual. El primero es funcional y afecta al caso de fallo más frecuente.</p>
+
+      <div class="stack">
+        <div class="defect">
+          <div class="defect-head"><span class="chip c-crit">Funcional</span><h3>«Reparar y reintentar» no limpia el dirty flag</h3></div>
+          <p><code>HelperService.fix</code> invoca <code>ntfsfix</code> pasándole únicamente la ruta del dispositivo. Confirmado contra el binario instalado (<code>ntfsfix v2026.7.7</code>): limpiar el <em>dirty flag</em> requiere explícitamente <code>-d</code> / <code>--clear-dirty</code>; el comportamiento por defecto arregla algunas inconsistencias y programa una comprobación, pero deja el volumen marcado como sucio. Como un volumen sucio es justo lo que hace fallar el montaje, la función de reparación probablemente no resuelve el escenario para el que existe.</p>
+          <p class="fix"><b>Arreglo</b>Pasar <code>["-d", devicePath]</code>, y contemplar que un disco con Windows hibernado no se arregla con <code>ntfsfix</code> en absoluto: necesita la opción de montaje <code>remove_hiberfile</code> o un apagado completo de Windows. Merecen mensajes distintos.</p>
+        </div>
+
+        <div class="defect">
+          <div class="defect-head"><span class="chip c-warn">UX</span><h3>La sonda de Acceso Total al Disco apunta al disco interno</h3></div>
+          <p><code>checkFullDiskAccess</code> abre <code>/dev/rdisk0</code>, el objetivo más estricto del sistema, en lugar del dispositivo que realmente se va a montar. Funciona como detector, pero informa de forma más agresiva de lo necesario y no distingue «falta TCC» de «este disco concreto no es accesible».</p>
+          <p class="fix"><b>Arreglo</b>Sondear el dispositivo objetivo cuando se conoce, y reservar <code>/dev/rdisk0</code> para la comprobación genérica de arranque.</p>
+        </div>
+
+        <div class="defect">
+          <div class="defect-head"><span class="chip c-warn">UX</span><h3>macFUSE instalado pero sin cargar se reporta como «pendiente de aprobación»</h3></div>
+          <p>Si <code>kmutil showloaded</code> no encuentra la kext, el chequeo cae al inspector de extensiones de sistema y acaba en <code>.installedPendingApproval</code>. En un arranque limpio, con macFUSE instalado y aprobado pero la kext aún no cargada, el usuario ve una advertencia falsa. Es exactamente el estado de esta máquina ahora mismo.</p>
+          <p class="fix"><b>Arreglo</b>Distinguir «no cargada» de «no aprobada» consultando también el área de preparación, y suavizar el texto cuando el estado sea ambiguo.</p>
+        </div>
+
+        <div class="defect">
+          <div class="defect-head"><span class="chip c-mute">Rendimiento</span><h3><code>checkAll()</code> se ejecuta en cada intento de montaje</h3></div>
+          <p><code>MountManager</code> llama al comprobador de dependencias por cada volumen, y eso arrastra un <code>kmutil showloaded</code> —que puede tardar segundos— más una ida y vuelta XPC. Conectar un lector con varias particiones multiplica el coste.</p>
+          <p class="fix"><b>Arreglo</b>Cachear el resultado con un TTL corto e invalidarlo ante cambios relevantes.</p>
+        </div>
+
+        <div class="defect">
+          <div class="defect-head"><span class="chip c-mute">Robustez</span><h3>Prefijos de Homebrew fijados en el código</h3></div>
+          <p>Solo se contemplan <code>/opt/homebrew</code> y <code>/usr/local</code>. Una instalación con prefijo personalizado nunca se detecta.</p>
+          <p class="fix"><b>Arreglo</b>Consultar <code>brew --prefix</code>; el problema desaparece del todo al embeber los binarios (Nivel 0).</p>
+        </div>
+
+        <div class="defect">
+          <div class="defect-head"><span class="chip c-mute">Robustez</span><h3>La expulsión ignora los errores</h3></div>
+          <p><code>AppCoordinator.eject</code> descarta el error sin informar. Si la expulsión falla porque un proceso mantiene el volumen ocupado, el usuario no se entera.</p>
+          <p class="fix"><b>Arreglo</b>Propagar el fallo a la interfaz e indicar, si se puede, qué lo retiene.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 07 -->
+    <section id="decision">
+      <h2><span class="num">07 — La decisión</span>Un solo desbloqueo mueve casi todo</h2>
+      <p>El análisis converge en un punto único. El Apple Developer Program de pago no es una mejora entre otras: es la llave de dos candados a la vez, y sin él el techo de la app queda fijado bastante por debajo de donde podría estar.</p>
+
+      <div class="table-wrap">
+        <table>
+          <caption>Lo que cambia al pasar de un equipo personal gratuito a una cuenta de pago.</caption>
+          <thead><tr><th>Capacidad</th><th>Equipo personal gratuito</th><th>Developer Program</th><th>Consecuencia</th></tr></thead>
+          <tbody>
+            <tr><td>Developer ID + notarización</td><td class="tick t-yes">No</td><td class="tick t-no">Sí</td><td>Desaparece el aviso de Gatekeeper y la firma del helper deja de ser frágil fuera del Mac de compilación</td></tr>
+            <tr><td><code>com.apple.developer.fskit.fsmodule</code></td><td class="tick t-yes">No</td><td class="tick t-no">Sí</td><td>Habilita todo el Nivel 2 — kext, TCC, helper y Homebrew fuera</td></tr>
+            <tr><td>Distribución fuera de Homebrew</td><td class="tick t-yes">Limitada</td><td class="tick t-no">Sí</td><td>Descarga directa sin instrucciones de <code>xattr</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="note">
+        <b class="label">Recomendación</b>
+        <p>Ejecutar el <strong>Nivel 0 ya</strong> — es barato, no depende de nada y corrige un defecto funcional real. En paralelo, decidir sobre la cuenta de pago, porque esa decisión determina si el destino es el Nivel 1 o el Nivel 2. Si hay cuenta, yo saltaría fuse‑t por completo: es trabajo de migración que el Nivel 2 vuelve a tirar, y su licencia no comercial es una restricción que FSKit no impone.</p>
+      </div>
+    </section>
+
+    <!-- 08 -->
+    <section id="riesgos">
+      <h2><span class="num">08 — Honestidad</span>Lo que no pude verificar</h2>
+      <ul>
+        <li><strong>Si el Acceso Total al Disco es estrictamente obligatorio para discos externos.</strong> No pude comprobarlo empíricamente aquí porque <code>hdiutil create</code> falló por falta de permisos en este entorno. La evidencia documental dice que sí aplica también a dispositivos extraíbles, así que el informe asume que el paso no se puede eliminar mientras siga la arquitectura ntfs‑3g + macFUSE.</li>
+        <li><strong>Si conceder Acceso Total al Disco a <code>AppNTFS.app</code> cubriría al demonio.</strong> La documentación indica que TCC concede por binario y que un demonio de <code>launchd</code> necesita su propia entrada, pero merece una prueba directa: si funcionase, el paso 7 pasaría de «arrastra un ejecutable oculto» a «arrastra la app», que es mucho más natural.</li>
+        <li><strong>El comportamiento de macOS 27</strong> con <code>FSClient.mountSingleVolume</code> procede de documentación de terceros, no de pruebas propias.</li>
+        <li><strong>No se compiló nada.</strong> <code>/Applications/Xcode.app</code> no existe en esta máquina —solo hay Command Line Tools—, así que ninguna de las correcciones propuestas está verificada en compilación. El árbol de trabajo sigue limpio en <code>feature/upgrades</code>; no se ha modificado ningún archivo.</li>
+      </ul>
+    </section>
+
+    </article>
+  </div>
+
+  <footer>
+    Análisis realizado sobre app-ntfs-macos · rama feature/upgrades · macOS 26.6.2 (25G83) arm64<br>
+    Verificado en máquina: estado de TCC sobre /dev/rdisk0 · opciones de ntfsfix v2026.7.7 · licencia de fuse-t · módulos FSKit registrados vía pluginkit
+  </footer>
+</div>

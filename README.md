@@ -44,15 +44,43 @@ del Sistema.
   (Signing & Capabilities de ambos targets) o directamente en `project.yml` y
   volvé a correr `xcodegen generate`.
 
-## Instalar las dependencias NTFS (macFUSE + ntfs-3g)
+## Instalar las dependencias NTFS (macFUSE)
 
-El `ntfs-3g` de homebrew-core es **solo para Linux**; en macOS hay que usar el
-formula `ntfs-3g-mac` del tap `gromgit/homebrew-fuse`:
+**ntfs-3g ya no hay que instalarlo.** `Scripts/embed-ntfs-3g.sh` copia
+`ntfs-3g`, `ntfs-3g.probe` y `ntfsfix` (más sus dylibs) dentro del bundle
+durante el build, reescribe sus rutas de carga a `@executable_path/../Frameworks`
+y los vuelve a firmar. `DependencyChecker` prefiere esas copias y solo cae a
+Homebrew si el bundle no las trae.
+
+Para *compilar* la app sí hace falta tenerlo instalado, porque el script lo
+copia de ahí. El `ntfs-3g` de homebrew-core es **solo para Linux**; en macOS
+hay que usar la formula `ntfs-3g-mac` del tap `gromgit/homebrew-fuse`:
+
+```sh
+brew tap gromgit/homebrew-fuse
+brew install ntfs-3g-mac
+```
+
+Si no está, el build no falla: emite un warning y produce una app que seguirá
+pidiendo Homebrew en la máquina del usuario. Eso está bien para compilar en
+local, pero sería un desastre silencioso en un release —así que el workflow de
+release pasa `REQUIRE_EMBEDDED_NTFS3G=1`, que convierte ese warning en error, y
+después verifica sobre el `.app` ya construido que los tres binarios y las
+licencias estén adentro y que ningún load command siga apuntando al Homebrew de
+la máquina de build.
+
+ntfs-3g es GPLv2 (y libntfs-3g LGPLv2), así que el script también copia
+`COPYING`, `COPYING.LIB`, `AUTHORS` y una nota con el origen del código a
+`AppNTFS.app/Contents/Resources/ntfs-3g/`. Eso es obligatorio al redistribuir
+los binarios, no opcional.
+
+**macFUSE sí sigue haciendo falta.** No se puede empotrar: `ntfs-3g` enlaza
+`/usr/local/lib/libfuse.2.dylib` por ruta absoluta, y esa librería es la mitad
+en espacio de usuario de una kernel extension que el usuario tiene que
+instalar y aprobar igual.
 
 ```sh
 brew install --cask macfuse
-brew tap gromgit/homebrew-fuse
-brew install ntfs-3g-mac
 ```
 
 Como usamos el backend kext clásico de macFUSE, hace falta un paso único de
@@ -93,7 +121,9 @@ al disco.
 - `AppNTFSKit/` — Swift Package con toda la lógica (sin UI), testeable de forma
   aislada:
   - `DiskWatcher` — detecta volúmenes NTFS vía DiskArbitration.
-  - `DependencyChecker` — detecta Homebrew/ntfs-3g-mac/macFUSE, el estado de
+  - `DependencyChecker` — resuelve dónde está ntfs-3g (primero las copias
+    empotradas en el bundle vía `BundledNtfs3g`, después Homebrew) y detecta
+    macFUSE, el estado de
     aprobación de la extensión de sistema, del helper privilegiado y del
     Acceso completo al disco del helper (`FullDiskAccessProbing`, la
     implementación real vive en `AppNTFS/Helper/PrivilegedHelperMounter`
@@ -319,5 +349,4 @@ brew install --cask appntfs
 El cask (`Casks/appntfs.rb`) apunta siempre al último release y le saca el
 atributo de cuarentena automáticamente (la app sigue firmada, solo no está
 notarizada — ver "Distribución" arriba). Instala `macfuse` como dependencia
-del cask; `ntfs-3g-mac` no está en homebrew-core y hay que instalarlo aparte
-(el cask lo indica en los "caveats" al instalar).
+del cask; ntfs-3g viene dentro de la app y no requiere ningún paso extra.
