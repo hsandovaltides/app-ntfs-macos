@@ -33,9 +33,14 @@ cask "appntfs" do
       AppNTFS.app/Contents/Resources/ntfs-3g/.
 
       Quedan dos pasos manuales de aprobación en Ajustes del Sistema (una sola vez):
-        1. macFUSE: kernel extension de terceros — necesita el paso de
-           Recovery Mode (Utilidad de Seguridad de Arranque → Seguridad
-           reducida). Ver el README del proyecto para el detalle.
+        1. El backend de macFUSE. En macOS 15.4+ con macFUSE 5.2+ alcanza con
+           activar su extensión en General → Elementos de inicio y extensiones
+           → Extensiones del sistema de archivos: sin kext, sin Recovery Mode
+           y sin reinicios. Si no aparece ahí, ejecutá Scripts/register-fskit.sh
+           del repo (o el botón "Registrar extensiones de macFUSE" de la app).
+           Solo si tu macOS es anterior hace falta aprobar la kernel extension,
+           que sí exige Recovery Mode (Utilidad de Seguridad de Arranque →
+           Seguridad reducida). Ver el README del proyecto para el detalle.
         2. El helper privilegiado de AppNTFS y su permiso de Acceso completo
            al disco — la propia app te guía a estos dos desde su menú.
     EOS

@@ -47,6 +47,11 @@ struct MountManagerTests {
                 fileSystem: readyFileSystem(),
                 helperStatusProbe: FakeHelperServiceStatusProbe(state: .installedAndApproved)
             ),
+            // Nothing mounted when the pipeline starts, ntfs-3g mounted by the
+            // time it verifies. The verification is not optional: ntfs-3g
+            // daemonizes and exits 0 even when the mount failed, so the mount
+            // table is the only thing that can tell the two apart.
+            mountPointInspector: .mountedAfterMounting(Self.volume.mountPath),
             logger: AppLogger()
         )
 
@@ -221,6 +226,11 @@ struct MountManagerTests {
                 fileSystem: readyFileSystem(),
                 helperStatusProbe: FakeHelperServiceStatusProbe(state: .installedAndApproved)
             ),
+            // The repair path skips the "already mounted?" check entirely, so
+            // the only stat here is the post-mount verification.
+            mountPointInspector: FakeMountPointInspector(
+                typesByPath: [Self.volume.mountPath: "macfuse"]
+            ),
             logger: AppLogger()
         )
 
@@ -284,5 +294,138 @@ struct MountManagerTests {
         }
         let diskutilCalls = await runner.calls.filter { $0.executable == Self.diskutil }
         #expect(diskutilCalls.count == 2)
+    }
+
+    @Test("A mount that exits 0 without mounting anything is treated as a failure")
+    func exitCodeZeroIsNotEnough() async {
+        // ntfs-3g daemonizes: the parent exits 0 before the child knows
+        // whether the mount took, so a mount that failed outright still
+        // reports success. Measured directly — a mount rejected with "File
+        // system extension not enabled" exited 0 with an empty stderr. Only
+        // the mount table can tell the two apart.
+        let runner = readyRunner()
+        let manager = MountManager(
+            runner: runner,
+            dependencyChecker: DependencyChecker(
+                runner: runner,
+                fileSystem: readyFileSystem(),
+                helperStatusProbe: FakeHelperServiceStatusProbe(state: .installedAndApproved)
+            ),
+            // Nothing at the mount path, before or after.
+            mountPointInspector: FakeMountPointInspector(),
+            logger: AppLogger()
+        )
+
+        let result = await manager.attemptRemount(Self.volume)
+
+        guard case .failure(.mountFailed) = result else {
+            Issue.record("Expected .mountFailed despite ntfs-3g exiting 0, got \(result)")
+            return
+        }
+        // And the volume was handed back to the native read-only driver
+        // rather than left unmounted.
+        let diskutilCalls = await runner.calls.filter { $0.executable == Self.diskutil }
+        #expect(diskutilCalls.count == 2)
+    }
+
+    @Test("A volume mounted as native read-only ntfs doesn't count as mounted")
+    func nativeReadOnlyIsNotASuccessfulMount() async {
+        let runner = readyRunner()
+        let manager = MountManager(
+            runner: runner,
+            dependencyChecker: DependencyChecker(
+                runner: runner,
+                fileSystem: readyFileSystem(),
+                helperStatusProbe: FakeHelperServiceStatusProbe(state: .installedAndApproved)
+            ),
+            // `ntfs` is the native read-only driver — the state the pipeline
+            // exists to replace. Accepting it would report a read-only volume
+            // to the user as read-write.
+            mountPointInspector: FakeMountPointInspector(
+                sequencesByPath: [Self.volume.mountPath: [nil, "ntfs"]]
+            ),
+            logger: AppLogger()
+        )
+
+        let result = await manager.attemptRemount(Self.volume)
+
+        guard case .failure(.mountFailed) = result else {
+            Issue.record("Expected .mountFailed for a native ntfs mount, got \(result)")
+            return
+        }
+    }
+
+    @Test("FSKit is tried first and the kext takes over when it doesn't mount")
+    func fallsBackFromFSKitToKext() async {
+        let fskitExtension =
+            "\(FuseBackendAvailability.macFUSEExtensionsDirectory)/\(FuseBackendAvailability.macFUSEFSKitExtensionName)"
+        let fileSystem = FakeFileSystemProbe(
+            existingPaths: ["\(Self.homebrewPrefix)/Caskroom/macfuse", fskitExtension],
+            executablePaths: ["\(Self.homebrewPrefix)/bin/brew", Self.ntfs3gBin]
+        )
+        let runner = readyRunner()
+        let manager = MountManager(
+            runner: runner,
+            dependencyChecker: DependencyChecker(
+                runner: runner,
+                fileSystem: fileSystem,
+                helperStatusProbe: FakeHelperServiceStatusProbe(state: .installedAndApproved),
+                operatingSystemIsAtLeast: { _ in true }
+            ),
+            // Nothing mounted at the start; still nothing after the FSKit
+            // attempt (the extension is present but switched off — the exact
+            // situation this fallback exists for); mounted after the kext one.
+            mountPointInspector: FakeMountPointInspector(
+                sequencesByPath: [Self.volume.mountPath: [nil, nil, "macfuse"]]
+            ),
+            logger: AppLogger()
+        )
+
+        let result = await manager.attemptRemount(Self.volume)
+
+        guard case .success(let mounted) = result else {
+            Issue.record("Expected the kext attempt to succeed, got \(result)")
+            return
+        }
+        #expect(mounted.mountState == .readWrite)
+
+        let mountCalls = await runner.calls.filter { $0.executable == Self.ntfs3gBin }
+        #expect(mountCalls.count == 2)
+        #expect(mountCalls.first?.arguments.contains { $0.contains("backend=fskit") } == true)
+        #expect(mountCalls.last?.arguments.contains { $0.contains("backend=") } == false)
+    }
+
+    @Test("The kext is the only attempt when FSKit isn't available")
+    func kextOnlyWithoutFSKit() async {
+        let runner = readyRunner()
+        let manager = MountManager(
+            runner: runner,
+            dependencyChecker: DependencyChecker(
+                runner: runner,
+                fileSystem: readyFileSystem(),
+                helperStatusProbe: FakeHelperServiceStatusProbe(state: .installedAndApproved)
+            ),
+            mountPointInspector: .mountedAfterMounting(Self.volume.mountPath),
+            logger: AppLogger()
+        )
+
+        _ = await manager.attemptRemount(Self.volume)
+
+        let mountCalls = await runner.calls.filter { $0.executable == Self.ntfs3gBin }
+        #expect(mountCalls.count == 1)
+        #expect(mountCalls.first?.arguments.contains { $0.contains("backend=") } == false)
+    }
+
+    @Test("Only FUSE mounts count as a successful read-write mount")
+    func fuseFileSystemTypeRecognition() {
+        #expect(MountManager.isFuseFileSystemType("macfuse"))
+        #expect(MountManager.isFuseFileSystemType("MACFUSE"))
+        #expect(MountManager.isFuseFileSystemType("fuse-t"))
+        // The FSKit module registers a "macFUSE (FSKit)" personality; its
+        // exact statfs name hasn't been observed here, hence the loose match.
+        #expect(MountManager.isFuseFileSystemType("macFUSE (FSKit)"))
+        #expect(!MountManager.isFuseFileSystemType("ntfs"))
+        #expect(!MountManager.isFuseFileSystemType("apfs"))
+        #expect(!MountManager.isFuseFileSystemType("exfat"))
     }
 }

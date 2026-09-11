@@ -11,6 +11,11 @@ struct MenuBarContentView: View {
             Task { await coordinator.recheckDependencies() }
         }
 
+        FSKitSetupView(
+            status: coordinator.dependencyStatus,
+            volumes: coordinator.volumes
+        )
+
         if coordinator.volumes.isEmpty {
             Text("No hay volúmenes NTFS conectados")
         } else {

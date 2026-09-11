@@ -37,11 +37,45 @@ final class FakeFileSystemProbe: FileSystemProbing, @unchecked Sendable {
     func isExecutableFile(atPath path: String) -> Bool { executablePaths.contains(path) }
 }
 
-struct FakeMountPointInspector: MountPointInspecting {
+/// A mount table that can change between calls.
+///
+/// The pipeline stats the same mount path twice for different reasons — once
+/// up front to decide whether there is already an ntfs-3g mount to leave
+/// alone, and once after mounting to confirm the mount actually took (see
+/// `MountManager.mountFailureReason`). A fixed answer cannot express the
+/// normal case, where those two calls must differ: nothing mounted, then
+/// mounted. `sequencesByPath` supplies one answer per call and falls through
+/// to `typesByPath` once exhausted.
+final class FakeMountPointInspector: MountPointInspecting, @unchecked Sendable {
     /// fstype keyed by path; nil result for anything not listed.
-    var typesByPath: [String: String] = [:]
+    private let typesByPath: [String: String]
+    private let lock = NSLock()
+    private var sequencesByPath: [String: [String?]]
 
-    func fileSystemType(atPath path: String) -> String? { typesByPath[path] }
+    init(typesByPath: [String: String] = [:], sequencesByPath: [String: [String?]] = [:]) {
+        self.typesByPath = typesByPath
+        self.sequencesByPath = sequencesByPath
+    }
+
+    /// The common case: nothing is mounted when the pipeline starts, and the
+    /// mount is there by the time it verifies.
+    static func mountedAfterMounting(
+        _ path: String,
+        as fileSystemType: String = "macfuse"
+    ) -> FakeMountPointInspector {
+        FakeMountPointInspector(sequencesByPath: [path: [nil, fileSystemType]])
+    }
+
+    func fileSystemType(atPath path: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        if var queued = sequencesByPath[path], !queued.isEmpty {
+            let next = queued.removeFirst()
+            sequencesByPath[path] = queued
+            return next
+        }
+        return typesByPath[path]
+    }
 }
 
 struct FakeHelperServiceStatusProbe: HelperServiceStatusProbing {
