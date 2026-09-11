@@ -12,11 +12,29 @@ public actor MountManager {
     private let mountPointInspector: MountPointInspecting
     private let logger: AppLogger
 
-    /// `statfs` filesystem-type names that mean "already mounted read-write
-    /// via a FUSE NTFS driver" — nothing more for the pipeline to do.
+    /// `statfs` filesystem-type names that mean "mounted read-write via a FUSE
+    /// NTFS driver".
     private static let fuseFileSystemTypes: Set<String> = [
         "macfuse", "fuse", "osxfuse", "fuse-t", "ntfs-3g"
     ]
+
+    /// Whether a `statfs` type name is one of ours.
+    ///
+    /// Matched loosely on purpose. The exact string depends on the backend —
+    /// the kext reports `macfuse`, while the FSKit module registers itself as
+    /// the "macFUSE (FSKit)" personality and its mounts have not been observed
+    /// first-hand here (the FSKit extension could not be switched on during
+    /// development, see README). Anything carrying `fuse` is therefore
+    /// accepted rather than enumerated.
+    ///
+    /// The one string this must *not* match is the native read-only driver's,
+    /// which is exactly `ntfs` — that is the state the pipeline is trying to
+    /// replace, so treating it as success would report a read-only volume as
+    /// read-write. It doesn't: `ntfs` contains neither `fuse` nor `ntfs-3g`.
+    static func isFuseFileSystemType(_ type: String) -> Bool {
+        let normalized = type.lowercased()
+        return fuseFileSystemTypes.contains(normalized) || normalized.contains("fuse")
+    }
 
     /// nil ⇒ falls back to mounting directly as the current user (only ever
     /// works in tests; `ntfs-3g` itself refuses unprivileged mounts in
@@ -112,7 +130,7 @@ public actor MountManager {
         // for the explicit repair action, which the user asked for regardless.
         if !repairDirtyFlag,
            let fsType = mountPointInspector.fileSystemType(atPath: volume.mountPath),
-           Self.fuseFileSystemTypes.contains(fsType.lowercased()) {
+           Self.isFuseFileSystemType(fsType) {
             logger.info("\(volume.bsdName) already mounted read-write via \(fsType) — nothing to do")
             var mounted = volume
             mounted.mountState = .readWrite
@@ -187,34 +205,78 @@ public actor MountManager {
             return .failure(.mountFailed("\(error)"))
         }
 
-        let mountResult: ProcessResult
+        // Each backend gets a full attempt; the first one that actually ends
+        // up mounted wins. On a machine with FSKit enabled that is the first
+        // try and the kext is never touched — no Recovery Mode, no restart.
+        var lastError = "no backend was attempted"
+        for backend in status.mountBackends {
+            guard let error = await mountFailureReason(
+                volume, backend: backend, ntfs3g: ntfs3g, mounter: mounter
+            ) else {
+                var mounted = volume
+                mounted.mountState = .readWrite
+                logger.info("Mounted \(volume.volumeName) (\(volume.bsdName)) read-write via \(backend.rawValue)")
+                return .success(mounted)
+            }
+            lastError = error
+            logger.warning("\(backend.rawValue) backend failed for \(volume.bsdName): \(error)")
+        }
+
+        logger.error("every backend failed for \(volume.bsdName): \(lastError) — falling back to read-only")
+        let fallbackSucceeded = await restoreReadOnly(volume)
+        return .failure(fallbackSucceeded
+            ? .mountFailed(lastError)
+            : .mountFailedAndFallbackFailed(mountError: lastError, fallbackError: "diskutil mount also failed"))
+    }
+
+    /// One mount attempt with one backend. `nil` means the volume really is
+    /// mounted; anything else is the reason it isn't, so the caller can report
+    /// whichever backend failed last.
+    ///
+    /// The result is confirmed against the mount table rather than the exit
+    /// code, because `ntfs-3g`'s exit code cannot carry it: it daemonizes, and
+    /// the parent returns 0 before the child knows whether the mount took.
+    /// Verified directly — a mount that failed with "File system extension not
+    /// enabled", and one attempted with no kext loaded at all, both exited 0
+    /// and printed nothing to stderr. Trusting that alone would report a
+    /// failed mount as a success, and would leave the FSKit-to-kext fallback
+    /// below permanently unreachable.
+    ///
+    /// (macFUSE 5.4.0 changes this — its libfuse waits for the mount and exits
+    /// with a status that reflects it, macfuse/macfuse#1178. The check stays
+    /// regardless: it costs one `statfs`, and it is what makes the pipeline
+    /// correct on the older macFUSE builds users already have installed.)
+    private func mountFailureReason(
+        _ volume: NTFSVolume,
+        backend: FuseBackend,
+        ntfs3g: Ntfs3gCommand,
+        mounter: PrivilegedMounting
+    ) async -> String? {
+        let result: ProcessResult
         do {
-            mountResult = try await mounter.mountReadWrite(
+            result = try await mounter.mountReadWrite(
                 ntfs3gExecutablePath: ntfs3g.executablePath,
                 devicePath: volume.blockDevicePath,
                 mountPath: volume.mountPath,
-                options: ntfs3g.mountOptions(volumeName: volume.volumeName)
+                options: ntfs3g.mountOptions(volumeName: volume.volumeName, backend: backend)
             )
         } catch {
-            logger.error("mount_ntfs-3g threw for \(volume.bsdName): \(error) — falling back to read-only")
-            let fallbackSucceeded = await restoreReadOnly(volume)
-            return .failure(fallbackSucceeded
-                ? .mountFailed("\(error)")
-                : .mountFailedAndFallbackFailed(mountError: "\(error)", fallbackError: "diskutil mount also failed"))
+            return "\(error)"
         }
 
-        guard mountResult.succeeded else {
-            logger.error("mount_ntfs-3g failed for \(volume.bsdName): \(mountResult.standardError) — falling back to read-only")
-            let fallbackSucceeded = await restoreReadOnly(volume)
-            return .failure(fallbackSucceeded
-                ? .mountFailed(mountResult.standardError)
-                : .mountFailedAndFallbackFailed(mountError: mountResult.standardError, fallbackError: "diskutil mount also failed"))
+        guard result.succeeded else {
+            return result.standardError.isEmpty
+                ? "ntfs-3g exited with a failure status"
+                : result.standardError
         }
 
-        var mounted = volume
-        mounted.mountState = .readWrite
-        logger.info("Mounted \(volume.volumeName) (\(volume.bsdName)) read-write")
-        return .success(mounted)
+        guard let fsType = mountPointInspector.fileSystemType(atPath: volume.mountPath) else {
+            return "nothing is mounted at \(volume.mountPath) after ntfs-3g reported success"
+        }
+        guard Self.isFuseFileSystemType(fsType) else {
+            return "\(volume.mountPath) is mounted as \(fsType), not a FUSE filesystem"
+        }
+        return nil
     }
 
     /// Never leave a volume unreachable after we've unmounted its native RO

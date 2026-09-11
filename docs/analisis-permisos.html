@@ -243,7 +243,7 @@ footer{border-top:1px solid var(--rule); padding:2rem 0 3rem; font-family:var(--
 
 <div class="shell">
   <header class="masthead">
-    <p class="eyebrow">Análisis de arquitectura <span>·</span> <span>app-ntfs-macos</span> <span>·</span> <span>rama feature/upgrades</span> <span>·</span> <span>septiembre 2026</span></p>
+    <p class="eyebrow">Análisis de arquitectura <span>·</span> <span>app-ntfs-macos</span> <span>·</span> <span>rama feature/upgrades</span> <span>·</span> <span>septiembre 2026</span> <span>·</span> <span>actualizado tras implementar los Niveles 0 y 1</span></p>
     <h1>Arquitectura de permisos de AppNTFS</h1>
     <p class="standfirst">Hoy el usuario atraviesa <strong>ocho pasos manuales y dos reinicios</strong> antes de poder escribir en un disco NTFS. Seis de esos pasos no son requisitos técnicos de NTFS: son consecuencia del backend elegido. FSKit los elimina, y el único candado real que queda cuesta 99 dólares al año.</p>
 
@@ -283,7 +283,7 @@ footer{border-top:1px solid var(--rule); padding:2rem 0 3rem; font-family:var(--
           </thead>
           <tbody>
             <tr><td class="num-col">1</td><td>Instalar Homebrew</td><td>Decisión de empaquetado</td><td><span class="chip c-ok">Nivel 0</span></td></tr>
-            <tr><td class="num-col">2</td><td><code>brew install --cask macfuse</code></td><td>Backend kext</td><td><span class="chip c-warn">Nivel 1</span></td></tr>
+            <tr><td class="num-col">2</td><td><code>brew install --cask macfuse</code></td><td>Backend FUSE <em>(kext o FSKit)</em></td><td><span class="chip c-crit">Nivel 2</span></td></tr>
             <tr><td class="num-col">3</td><td><code>brew tap gromgit/fuse</code> + <code>ntfs-3g-mac</code></td><td>Decisión de empaquetado</td><td><span class="chip c-ok">Nivel 0</span></td></tr>
             <tr><td class="num-col">4</td><td>Recovery → Seguridad reducida → permitir kexts <em>(reinicio 1)</em></td><td>Kext en Apple Silicon</td><td><span class="chip c-warn">Nivel 1</span></td></tr>
             <tr><td class="num-col">5</td><td>Aprobar el desarrollador de macFUSE <em>(reinicio 2)</em></td><td>Kext en Apple Silicon</td><td><span class="chip c-warn">Nivel 1</span></td></tr>
@@ -351,24 +351,30 @@ footer{border-top:1px solid var(--rule); padding:2rem 0 3rem; font-family:var(--
 
       <div class="table-wrap">
         <table>
-          <caption>Verde = el usuario no lo ve. Rojo = el usuario tiene que actuar. La columna FSKit es casi toda verde, y ese es el argumento central de este informe.</caption>
+          <caption>Verde = el usuario no lo ve. Rojo = el usuario tiene que actuar. La última columna —el módulo FSKit propio— es casi toda verde, y ese es el argumento central de este informe; la del medio es lo que se puede tener hoy sin cuenta de pago.</caption>
           <thead>
-            <tr><th>Dimensión</th><th>macFUSE + kext <em>(hoy)</em></th><th>fuse‑t</th><th>Módulo FSKit</th></tr>
+            <tr><th>Dimensión</th><th>macFUSE + kext <em>(hoy)</em></th><th>macFUSE + FSKit</th><th>Módulo FSKit propio</th></tr>
           </thead>
           <tbody>
             <tr><td>Extensión de kernel</td><td class="tick t-yes">Sí</td><td class="tick t-no">No</td><td class="tick t-no">No</td></tr>
             <tr><td>Recovery Mode + 2 reinicios</td><td class="tick t-yes">Sí</td><td class="tick t-no">No</td><td class="tick t-no">No</td></tr>
-            <tr><td>Acceso Total al Disco</td><td class="tick t-yes">Sí</td><td class="tick t-part">Probable</td><td class="tick t-no">No</td></tr>
+            <tr><td>Acceso Total al Disco</td><td class="tick t-yes">Sí</td><td class="tick t-yes">Sí</td><td class="tick t-no">No</td></tr>
             <tr><td>Helper root + XPC</td><td class="tick t-yes">Sí</td><td class="tick t-yes">Sí</td><td class="tick t-no">No</td></tr>
-            <tr><td>Dependencia de Homebrew</td><td class="tick t-yes">Sí</td><td class="tick t-part">Cask propia</td><td class="tick t-no">No</td></tr>
+            <tr><td>Dependencia de Homebrew</td><td class="tick t-yes">Sí</td><td class="tick t-part">Opcional <em>(macFUSE trae <code>.pkg</code>)</em></td><td class="tick t-no">No</td></tr>
             <tr><td>Automontaje del sistema</td><td class="tick t-yes">No</td><td class="tick t-yes">No</td><td class="tick t-no">Sí</td></tr>
             <tr><td>Requiere la app corriendo</td><td class="tick t-yes">Sí</td><td class="tick t-yes">Sí</td><td class="tick t-no">No</td></tr>
-            <tr><td>Aprobaciones del usuario</td><td class="tick t-yes">3 + Gatekeeper</td><td class="tick t-part">2 + Gatekeeper</td><td class="tick t-no">1 interruptor</td></tr>
-            <tr><td>Licencia del backend</td><td>GPLv2 <span class="chip c-ok">libre</span></td><td>No comercial <span class="chip c-warn">restrictiva</span></td><td>GPLv2 <span class="chip c-ok">libre</span></td></tr>
+            <tr><td>Aprobaciones del usuario</td><td class="tick t-yes">3 + 2 reinicios + Gatekeeper</td><td class="tick t-part">3 sin reinicios + Gatekeeper</td><td class="tick t-no">1 interruptor</td></tr>
+            <tr><td>Recompilar <code>ntfs-3g</code></td><td class="tick t-no">No</td><td class="tick t-no">No <em>(mismo binario)</em></td><td class="tick t-yes">Sí <em>(como librería)</em></td></tr>
+            <tr><td>Licencia del backend</td><td>GPLv2 <span class="chip c-ok">libre</span></td><td>Idéntica a hoy <span class="chip c-ok">libre</span></td><td>GPLv2 <span class="chip c-ok">libre</span></td></tr>
             <tr><td>Apple Developer Program</td><td class="tick t-no">No exigido</td><td class="tick t-no">No exigido</td><td class="tick t-yes">Obligatorio</td></tr>
-            <tr><td>macOS mínimo</td><td>10.9+</td><td>11+</td><td>15.4+ <em>(maduro en 26)</em></td></tr>
+            <tr><td>macOS mínimo</td><td>10.9+</td><td>15.4+ <em>(y macFUSE 5.2+)</em></td><td>15.4+ <em>(maduro en 26)</em></td></tr>
           </tbody>
         </table>
+      </div>
+
+      <div class="note">
+        <b class="label">Corrección posterior — el <em>fuse‑t</em> de la versión original de este informe</b>
+        <p>La primera edición proponía sustituir macFUSE por <strong>fuse‑t</strong> para quitarse la kext, recompilando <code>ntfs-3g</code> contra su <em>fork</em> y asumiendo su licencia binaria no comercial. Al implementarlo resultó innecesario: el <code>ntfs-3g</code> <strong>de siempre</strong>, el binario de <code>gromgit/homebrew-fuse</code> enlazado contra <code>libfuse.2.dylib</code>, acepta <code>-o backend=fskit</code> y macFUSE lo reenvía a <code>MFMount</code>. Las notas de macFUSE 5.1.0 dicen que ese backend es solo para libfuse3, pero desde la 5.2.0 libfuse2 comparte el mismo camino. Es decir: <strong>ni fuse‑t, ni recompilar, ni licencia restrictiva</strong> — solo una opción de montaje más. Esta columna refleja lo que se construyó y verificó, no la propuesta original.</p>
       </div>
 
       <h3>La cadena de fricción, visualmente</h3>
@@ -387,10 +393,12 @@ footer{border-top:1px solid var(--rule); padding:2rem 0 3rem; font-family:var(--
           </div>
         </div>
         <div class="chain">
-          <p class="chain-head"><b>Nivel 1 — fuse‑t, sin kext, con binarios embebidos</b> <span>3 puertas</span></p>
+          <p class="chain-head"><b>Nivel 1 — backend FSKit de macFUSE, sin kext, con binarios embebidos</b> <span>5 puertas, ningún reinicio</span></p>
           <div class="gates">
-            <div class="gate gone"><b>01–03</b><s>Homebrew y fórmulas</s></div>
+            <div class="gate gone"><b>01·03</b><s>Homebrew y fórmulas</s></div>
+            <div class="gate soft"><b>02</b>Instalar macFUSE</div>
             <div class="gate gone"><b>04–05</b><s>Recovery y kext</s></div>
+            <div class="gate soft"><b>+</b>Activar la extensión en Ajustes</div>
             <div class="gate soft"><b>06</b>Aprobar helper</div>
             <div class="gate soft"><b>07</b>Acceso Total al Disco</div>
             <div class="gate soft"><b>08</b>Gatekeeper</div>
@@ -434,18 +442,20 @@ footer{border-top:1px solid var(--rule); padding:2rem 0 3rem; font-family:var(--
         <div class="tier t1">
           <div class="tier-head">
             <span class="tier-n">Nivel 1</span>
-            <h3>Sustituir macFUSE por fuse‑t</h3>
-            <span class="meta">sin cuenta nueva · esfuerzo medio · revisar licencia</span>
+            <h3>Montar por el backend FSKit de macFUSE</h3>
+            <span class="meta">sin cuenta nueva · esfuerzo bajo · sin cambio de licencia</span>
           </div>
-          <p>El mayor salto de usabilidad disponible sin cuenta de pago: fuse‑t no lleva kext, así que <strong>desaparecen los dos reinicios y las dos aprobaciones de Recovery</strong>. Está mantenido activamente (1.2.7, junio de 2026) y en macOS 26 usa un backend FSKit en lugar de bucles NFS o SMB.</p>
+          <p>El mayor salto de usabilidad disponible sin cuenta de pago, y bastante más barato de lo que este informe estimó en su primera edición: macFUSE 5.2+ sabe montar <strong>sin cargar su kext</strong>, delegando en una extensión FSKit que corre en espacio de usuario. <strong>Desaparecen los dos reinicios y el paso por Recovery Mode.</strong> Se selecciona con una opción de montaje —<code>-o backend=fskit</code>— sobre el mismo <code>ntfs-3g</code> que ya se usa.</p>
           <ul>
-            <li>Hay que recompilar <code>ntfs-3g</code> contra fuse‑t (existe el <em>fork</em> <code>macos-fuse-t/ntfs-3g</code>).</li>
-            <li>El helper y el Acceso Total al Disco probablemente sobreviven: se sigue abriendo el dispositivo de bloque directamente.</li>
-            <li>Con los backends NFS o SMB en versiones anteriores a macOS 26 puede aparecer un permiso nuevo de «volúmenes de red»; el backend FSKit lo evita.</li>
+            <li><strong>No hay que recompilar nada ni cambiar de proyecto FUSE.</strong> El binario de <code>gromgit/homebrew-fuse</code> enlaza <code>libfuse.2.dylib</code> y aun así acepta la opción: libfuse2 la reenvía a <code>MFMount</code>. Verificado ejecutando el montaje; contradice tanto la lectura literal de las notas de macFUSE 5.1.0 («solo con libfuse3») como la propuesta de migrar a fuse‑t.</li>
+            <li><strong>Intentar FSKit primero y caer al kext si falla</strong>, en el mismo intento de montaje. Una máquina con la extensión activada no ve nunca la kext; una antigua sigue funcionando como hoy.</li>
+            <li><strong>Verificar el montaje con <code>statfs</code>, no por el código de salida.</strong> <code>ntfs-3g</code> se demoniza y devuelve 0 aunque el montaje haya fallado, así que sin esa comprobación el <em>fallback</em> al kext no se dispararía jamás (corregido en macFUSE 5.4.0, <em>issue</em> #1178).</li>
+            <li>El helper y el Acceso Total al Disco sobreviven: se sigue abriendo el dispositivo de bloque directamente.</li>
+            <li>macFUSE se sigue necesitando —la extensión FSKit viene dentro de él—, así que el paso 2 de la tabla inicial no cae hasta el Nivel 2.</li>
           </ul>
           <div class="note caution">
-            <b class="label">Aviso de licencia — verificado hoy</b>
-            <p>La distribución binaria de fuse‑t es <strong>gratuita solo para uso no comercial</strong>. Empaquetarla con software comercial exige una licencia comercial de sus autores. Si AppNTFS es y seguirá siendo un proyecto libre y gratuito, encaja; si hay cualquier intención de monetización, este nivel queda descartado y conviene saltar directamente al Nivel 2.</p>
+            <b class="label">El paso manual que queda — y que ningún comando puede hacer por el usuario</b>
+            <p>La extensión viene <strong>desactivada</strong>, y activarla es un interruptor en <em>Ajustes del Sistema → General → Elementos de inicio y extensiones → Extensiones del sistema de archivos</em>. No hay API. Peor: en muchas instalaciones macFUSE deja sus extensiones <strong>sin registrar</strong>, así que ni siquiera aparecen en esa lista —y <code>macfuse install --components file-system-extensions --force</code> sale con 0 sin registrar nada (reproducido en macFUSE 5.3.3 / macOS 26.6.2). El rodeo es <code>pluginkit -v -a</code> sobre cada <code>.appex</code> (<em>issue</em> #1071), que es lo que hace <code>Scripts/register-fskit.sh</code> y el botón de respaldo de la app. Registrar ≠ activar: incluso con <code>pluginkit</code> informando «enabled», el montaje puede seguir respondiendo <em>«File system extension not enabled»</em> hasta que se toca el interruptor.</p>
           </div>
         </div>
 
@@ -530,7 +540,7 @@ footer{border-top:1px solid var(--rule); padding:2rem 0 3rem; font-family:var(--
 
       <div class="note">
         <b class="label">Recomendación</b>
-        <p>Ejecutar el <strong>Nivel 0 ya</strong> — es barato, no depende de nada y corrige un defecto funcional real. En paralelo, decidir sobre la cuenta de pago, porque esa decisión determina si el destino es el Nivel 1 o el Nivel 2. Si hay cuenta, yo saltaría fuse‑t por completo: es trabajo de migración que el Nivel 2 vuelve a tirar, y su licencia no comercial es una restricción que FSKit no impone.</p>
+        <p>Ejecutar el <strong>Nivel 0 ya</strong> — es barato, no depende de nada y corrige un defecto funcional real. El <strong>Nivel 1 también</strong>, ahora que resultó ser una opción de montaje y no una migración: no hay nada que tirar después, porque el Nivel 2 sustituye igualmente todo el camino de montaje. En paralelo, decidir sobre la cuenta de pago, que es lo único que separa del destino real: mientras no exista, el interruptor de la extensión, el helper y el Acceso Total al Disco se quedan.</p>
       </div>
     </section>
 
@@ -541,7 +551,9 @@ footer{border-top:1px solid var(--rule); padding:2rem 0 3rem; font-family:var(--
         <li><strong>Si el Acceso Total al Disco es estrictamente obligatorio para discos externos.</strong> No pude comprobarlo empíricamente aquí porque <code>hdiutil create</code> falló por falta de permisos en este entorno. La evidencia documental dice que sí aplica también a dispositivos extraíbles, así que el informe asume que el paso no se puede eliminar mientras siga la arquitectura ntfs‑3g + macFUSE.</li>
         <li><strong>Si conceder Acceso Total al Disco a <code>AppNTFS.app</code> cubriría al demonio.</strong> La documentación indica que TCC concede por binario y que un demonio de <code>launchd</code> necesita su propia entrada, pero merece una prueba directa: si funcionase, el paso 7 pasaría de «arrastra un ejecutable oculto» a «arrastra la app», que es mucho más natural.</li>
         <li><strong>El comportamiento de macOS 27</strong> con <code>FSClient.mountSingleVolume</code> procede de documentación de terceros, no de pruebas propias.</li>
-        <li><strong>No se compiló nada.</strong> <code>/Applications/Xcode.app</code> no existe en esta máquina —solo hay Command Line Tools—, así que ninguna de las correcciones propuestas está verificada en compilación. El árbol de trabajo sigue limpio en <code>feature/upgrades</code>; no se ha modificado ningún archivo.</li>
+        <li><strong>No se compiló la app.</strong> <code>/Applications/Xcode.app</code> no existe en esta máquina —solo hay Command Line Tools—. <code>AppNTFSKit</code> sí compila con <code>swift build</code>, y los archivos de UI pasan <code>swiftc -typecheck</code>, pero <strong>la suite de pruebas no se puede ejecutar aquí</strong>: falta el <em>plugin</em> de macros de swift‑testing, así que ni las pruebas nuevas ni las existentes llegan a compilar. Hace falta <code>xcodegen generate</code> y una pasada en Xcode.</li>
+        <li><strong>El montaje por FSKit no está verificado de punta a punta.</strong> Se comprobó que el binario acepta <code>-o backend=fskit</code> y que la llamada llega a <code>MFMount</code>, y la lógica de selección y <em>fallback</em> está cubierta por pruebas; lo que falta es un montaje real con la extensión activada, cosa que solo puede hacer el usuario desde Ajustes.</li>
+        <li><strong>Este informe ya no describe un árbol limpio.</strong> Los Niveles 0 y 1 están implementados en <code>feature/upgrades</code>, sin <em>commit</em>. La primera edición proponía fuse‑t para el Nivel 1; la implementación demostró que no hacía falta —ver la corrección en la sección 04—.</li>
       </ul>
     </section>
 
@@ -550,6 +562,7 @@ footer{border-top:1px solid var(--rule); padding:2rem 0 3rem; font-family:var(--
 
   <footer>
     Análisis realizado sobre app-ntfs-macos · rama feature/upgrades · macOS 26.6.2 (25G83) arm64<br>
-    Verificado en máquina: estado de TCC sobre /dev/rdisk0 · opciones de ntfsfix v2026.7.7 · licencia de fuse-t · módulos FSKit registrados vía pluginkit
+    Verificado en máquina: estado de TCC sobre /dev/rdisk0 · opciones de ntfsfix v2026.7.7 · ntfs-3g con libfuse2 aceptando -o backend=fskit · módulos FSKit registrados vía pluginkit<br>
+    Actualizado tras implementar los Niveles 0 y 1 — el Nivel 1 se resolvió con el backend FSKit de macFUSE, no con fuse-t
   </footer>
 </div>

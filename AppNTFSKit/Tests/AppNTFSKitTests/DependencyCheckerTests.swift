@@ -207,4 +207,127 @@ struct DependencyCheckerTests {
         #expect(status.ntfs3gInstalled)
         #expect(status.isReady)
     }
+
+    @Test("The FSKit backend is reported when macFUSE ships its extension")
+    func detectsFSKitBackend() async {
+        let helpers = "/Applications/AppNTFS.app/Contents/Helpers"
+        let fskitExtension =
+            "\(FuseBackendAvailability.macFUSEExtensionsDirectory)/\(FuseBackendAvailability.macFUSEFSKitExtensionName)"
+        let fileSystem = FakeFileSystemProbe(
+            existingPaths: ["/Library/Filesystems/macfuse.fs", fskitExtension],
+            executablePaths: [
+                "\(helpers)/ntfs-3g",
+                "\(helpers)/ntfs-3g.probe",
+                "\(helpers)/ntfsfix"
+            ]
+        )
+        let runner = FakeProcessRunner(responses: [
+            "/usr/bin/systemextensionsctl": ProcessResult(
+                exitCode: 0,
+                standardOutput: SampleSystemExtensionsOutput.macFUSEPendingApproval,
+                standardError: ""
+            )
+        ])
+
+        let status = await DependencyChecker(
+            runner: runner,
+            fileSystem: fileSystem,
+            helperStatusProbe: FakeHelperServiceStatusProbe(state: .installedAndApproved),
+            bundledBinariesDirectory: helpers,
+            operatingSystemIsAtLeast: { _ in true }
+        ).checkAll()
+
+        // The whole point of nivel 1: the kext is installed but never
+        // approved — which used to mean a trip to Recovery Mode — and the
+        // machine is nonetheless ready, because the FSKit backend needs no
+        // kext at all.
+        #expect(status.fskitBackendAvailable)
+        #expect(status.mountBackends == [.fskit, .kext])
+        #expect(status.isReady)
+    }
+
+    @Test("An older macOS keeps the kext requirement even with the extension on disk")
+    func fskitNeedsMacOS154() async {
+        let fskitExtension =
+            "\(FuseBackendAvailability.macFUSEExtensionsDirectory)/\(FuseBackendAvailability.macFUSEFSKitExtensionName)"
+        let fileSystem = FakeFileSystemProbe(
+            existingPaths: ["/opt/homebrew/Caskroom/macfuse", fskitExtension],
+            executablePaths: [
+                "/opt/homebrew/bin/brew",
+                "/opt/homebrew/opt/ntfs-3g-mac/bin/ntfs-3g"
+            ]
+        )
+        let runner = FakeProcessRunner(responses: [
+            "/usr/bin/systemextensionsctl": ProcessResult(
+                exitCode: 0,
+                standardOutput: SampleSystemExtensionsOutput.macFUSEPendingApproval,
+                standardError: ""
+            )
+        ])
+
+        let status = await DependencyChecker(
+            runner: runner,
+            fileSystem: fileSystem,
+            helperStatusProbe: FakeHelperServiceStatusProbe(state: .installedAndApproved),
+            bundledBinariesDirectory: nil,
+            operatingSystemIsAtLeast: { _ in false }
+        ).checkAll()
+
+        #expect(!status.fskitBackendAvailable)
+        #expect(status.mountBackends == [.kext])
+        #expect(!status.isReady)
+    }
+}
+
+@Suite("DependencyStatus backends")
+struct DependencyStatusBackendTests {
+    private func status(macFUSE: InstallState, fskit: Bool) -> DependencyStatus {
+        DependencyStatus(
+            homebrewPrefix: nil,
+            ntfs3gBinDirectory: "/Applications/AppNTFS.app/Contents/Helpers",
+            macFUSEState: macFUSE,
+            helperState: .installedAndApproved,
+            fullDiskAccessGranted: true,
+            fskitBackendAvailable: fskit
+        )
+    }
+
+    @Test("FSKit is tried first, with the kext kept as the fallback")
+    func backendOrder() {
+        #expect(status(macFUSE: .installedAndApproved, fskit: true).mountBackends == [.fskit, .kext])
+        #expect(status(macFUSE: .installedAndApproved, fskit: false).mountBackends == [.kext])
+    }
+
+    @Test("With FSKit, an unapproved kext no longer blocks readiness")
+    func unapprovedKextIsFineWithFSKit() {
+        #expect(status(macFUSE: .installedPendingApproval, fskit: true).macFUSEUsable)
+        #expect(status(macFUSE: .installedPendingApproval, fskit: true).isReady)
+    }
+
+    @Test("Without FSKit, kext approval is still required")
+    func unapprovedKextStillBlocksWithoutFSKit() {
+        #expect(!status(macFUSE: .installedPendingApproval, fskit: false).macFUSEUsable)
+        #expect(!status(macFUSE: .installedPendingApproval, fskit: false).isReady)
+    }
+
+    @Test("FSKit doesn't substitute for having macFUSE installed at all")
+    func macFUSEIsStillRequired() {
+        // The FSKit module ships *inside* macFUSE, so this combination
+        // shouldn't occur in practice — but readiness must not depend on that.
+        #expect(!status(macFUSE: .notInstalled, fskit: true).macFUSEUsable)
+        #expect(!status(macFUSE: .notInstalled, fskit: true).isReady)
+    }
+
+    @Test("Callers that predate the FSKit work still describe a kext-only machine")
+    func legacyInitializerIsUnchanged() {
+        let legacy = DependencyStatus(
+            homebrewPrefix: "/opt/homebrew",
+            ntfs3gInstalled: true,
+            macFUSEState: .installedAndApproved,
+            helperState: .installedAndApproved
+        )
+        #expect(!legacy.fskitBackendAvailable)
+        #expect(legacy.mountBackends == [.kext])
+        #expect(legacy.isReady)
+    }
 }

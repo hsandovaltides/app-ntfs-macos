@@ -38,11 +38,27 @@ public enum HelperRequestValidation {
     /// three ship from the `gromgit/homebrew-fuse` `ntfs-3g-mac` formula.
     static let allowedExecutableNames: Set<String> = ["ntfs-3g", "ntfs-3g.probe", "ntfsfix"]
 
-    /// Mount option keys `Ntfs3gCommand.mountOptions(volumeName:)` is allowed
-    /// to produce. Anything else (`rw`, `allow_other`, `uid=`, …) is rejected
-    /// so a tampered option string can't widen the mount's exposure.
+    /// Mount option keys `Ntfs3gCommand.mountOptions(volumeName:backend:)` is
+    /// allowed to produce. Anything else (`rw`, `allow_other`, `uid=`, …) is
+    /// rejected so a tampered option string can't widen the mount's exposure.
     static let allowedMountOptionKeys: Set<String> = [
-        "volname", "windows_names", "auto_xattr", "local_lockfile"
+        "volname", "windows_names", "auto_xattr", "local_lockfile", "backend"
+    ]
+
+    /// Keys whose *value* is constrained too, and to what.
+    ///
+    /// `backend` selects which macFUSE implementation performs the mount, so
+    /// unlike `volname` — a display string — its value decides what code runs.
+    /// Allow-listing the key alone would have let a tampered option string
+    /// name any backend macFUSE might grow, present or future, which is
+    /// exactly the kind of open-ended choice this type exists to prevent. The
+    /// kext backend is the default and carries no token, so `fskit` is the
+    /// only value the app ever sends.
+    ///
+    /// A key listed here must appear as `key=value`; the bare `key` form is
+    /// rejected, since "no value" is not in the allowed set.
+    static let allowedMountOptionValues: [String: Set<String>] = [
+        "backend": [FuseBackend.fskit.rawValue]
     ]
 
     /// An `ntfs-3g-mac` binary path the helper is willing to execute: absolute,
@@ -90,13 +106,21 @@ public enum HelperRequestValidation {
     }
 
     /// Every comma-separated token is `key` or `key=value` with `key` in the
-    /// allow-list. Empty option strings are rejected.
+    /// allow-list — and, for the keys in `allowedMountOptionValues`, with the
+    /// value in that key's set too. Empty option strings are rejected.
     public static func isValidMountOptions(_ options: String) -> Bool {
         let tokens = options.split(separator: ",", omittingEmptySubsequences: false)
         guard !tokens.isEmpty else { return false }
         return tokens.allSatisfy { token in
-            let key = token.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)[0]
-            return allowedMountOptionKeys.contains(String(key))
+            let parts = token.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            let key = String(parts[0])
+            guard allowedMountOptionKeys.contains(key) else { return false }
+            guard let allowedValues = allowedMountOptionValues[key] else { return true }
+            // `parts.count == 1` is the bare `key` form, which has no value to
+            // check against the set — so it fails, rather than slipping past a
+            // constraint that only inspects `key=value`.
+            guard parts.count == 2 else { return false }
+            return allowedValues.contains(String(parts[1]))
         }
     }
 

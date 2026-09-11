@@ -28,17 +28,47 @@ public struct DependencyStatus: Sendable, Equatable {
     /// approved, so there's nothing to ask) rather than blocking on a check
     /// that couldn't run.
     public let fullDiskAccessGranted: Bool
+    /// Whether macFUSE's FSKit backend is worth attempting — macOS 15.4+ with
+    /// macFUSE's file-system extension present on disk. See
+    /// `FuseBackendAvailability`, which deliberately does *not* try to
+    /// establish that the extension is switched on.
+    public let fskitBackendAvailable: Bool
 
     /// Whether ntfs-3g was found anywhere. Homebrew is no longer implied — see
     /// `ntfs3gBinDirectory`.
     public var ntfs3gInstalled: Bool { ntfs3gBinDirectory != nil }
+
+    /// Backends the mount pipeline should try, in order.
+    ///
+    /// FSKit first when it's plausible: it needs no kext, so it works on a
+    /// machine where the user never went near Recovery Mode. The kext stays
+    /// last as the proven fallback — it is attempted whether or not FSKit was,
+    /// because "FSKit plausible" is not "FSKit enabled".
+    public var mountBackends: [FuseBackend] {
+        fskitBackendAvailable ? [.fskit, .kext] : [.kext]
+    }
+
+    /// macFUSE's kext approval is only a *requirement* when the kext is the
+    /// only way in. With FSKit available, an installed-but-unapproved macFUSE
+    /// is a perfectly workable install — demanding approval there would send
+    /// the user to Recovery Mode for a backend the app is not going to use,
+    /// which is the entire thing nivel 1 removes.
+    ///
+    /// It is still only "plausible", so this can let a mount through that then
+    /// fails on both backends. That is the right trade: the failure is a
+    /// recoverable one the pipeline reports (and falls back to read-only
+    /// from), whereas an over-strict gate is a volume the app refuses to touch
+    /// on a machine where it would have worked.
+    public var macFUSEUsable: Bool {
+        fskitBackendAvailable ? macFUSEState != .notInstalled : macFUSEState == .installedAndApproved
+    }
 
     /// Homebrew is deliberately absent from this list. It is a delivery
     /// mechanism for ntfs-3g, not a requirement of its own, and with the
     /// binaries embedded a machine with no Homebrew is a perfectly ready one.
     public var isReady: Bool {
         ntfs3gInstalled
-            && macFUSEState == .installedAndApproved
+            && macFUSEUsable
             && helperState == .installedAndApproved
             && fullDiskAccessGranted
     }
@@ -48,13 +78,15 @@ public struct DependencyStatus: Sendable, Equatable {
         ntfs3gBinDirectory: String?,
         macFUSEState: InstallState,
         helperState: InstallState,
-        fullDiskAccessGranted: Bool = true
+        fullDiskAccessGranted: Bool = true,
+        fskitBackendAvailable: Bool = false
     ) {
         self.homebrewPrefix = homebrewPrefix
         self.ntfs3gBinDirectory = ntfs3gBinDirectory
         self.macFUSEState = macFUSEState
         self.helperState = helperState
         self.fullDiskAccessGranted = fullDiskAccessGranted
+        self.fskitBackendAvailable = fskitBackendAvailable
     }
 
     /// Homebrew-flavoured form: "installed" means installed *by Homebrew*, at
@@ -64,7 +96,8 @@ public struct DependencyStatus: Sendable, Equatable {
         ntfs3gInstalled: Bool,
         macFUSEState: InstallState,
         helperState: InstallState,
-        fullDiskAccessGranted: Bool = true
+        fullDiskAccessGranted: Bool = true,
+        fskitBackendAvailable: Bool = false
     ) {
         self.init(
             homebrewPrefix: homebrewPrefix,
@@ -72,7 +105,8 @@ public struct DependencyStatus: Sendable, Equatable {
                 .map(Ntfs3gCommand.homebrewBinDirectory(prefix:)),
             macFUSEState: macFUSEState,
             helperState: helperState,
-            fullDiskAccessGranted: fullDiskAccessGranted
+            fullDiskAccessGranted: fullDiskAccessGranted,
+            fskitBackendAvailable: fskitBackendAvailable
         )
     }
 }
@@ -125,7 +159,7 @@ public struct DefaultFileSystemProbe: FileSystemProbing {
 
 extension DependencyStatus: CustomStringConvertible {
     public var description: String {
-        "homebrew=\(homebrewPrefix ?? "missing") ntfs3g=\(ntfs3gBinDirectory ?? "missing") macFUSE=\(macFUSEState) helper=\(helperState) fullDiskAccess=\(fullDiskAccessGranted)"
+        "homebrew=\(homebrewPrefix ?? "missing") ntfs3g=\(ntfs3gBinDirectory ?? "missing") macFUSE=\(macFUSEState) helper=\(helperState) fullDiskAccess=\(fullDiskAccessGranted) backends=\(mountBackends.map(\.rawValue).joined(separator: ">"))"
     }
 }
 
@@ -187,6 +221,10 @@ public struct DependencyChecker: Sendable {
     private let fullDiskAccessProbe: FullDiskAccessProbing?
     private let bundledBinariesDirectory: String?
     private let cacheTTL: TimeInterval
+    /// Injectable so the FSKit branch can be exercised from a test regardless
+    /// of the macOS version the tests happen to run on — the one input to
+    /// `fskitIsPlausible` a fake filesystem can't stand in for.
+    private let operatingSystemIsAtLeast: @Sendable (OperatingSystemVersion) -> Bool
     private let cache = StatusCache()
 
     public init(
@@ -195,7 +233,10 @@ public struct DependencyChecker: Sendable {
         helperStatusProbe: HelperServiceStatusProbing = DefaultHelperServiceStatusProbe(),
         fullDiskAccessProbe: FullDiskAccessProbing? = nil,
         bundledBinariesDirectory: String? = BundledNtfs3g.runningHostDirectory,
-        cacheTTL: TimeInterval = DependencyChecker.defaultCacheTTL
+        cacheTTL: TimeInterval = DependencyChecker.defaultCacheTTL,
+        operatingSystemIsAtLeast: @escaping @Sendable (OperatingSystemVersion) -> Bool = {
+            ProcessInfo.processInfo.isOperatingSystemAtLeast($0)
+        }
     ) {
         self.runner = runner
         self.fileSystem = fileSystem
@@ -203,6 +244,7 @@ public struct DependencyChecker: Sendable {
         self.fullDiskAccessProbe = fullDiskAccessProbe
         self.bundledBinariesDirectory = bundledBinariesDirectory
         self.cacheTTL = cacheTTL
+        self.operatingSystemIsAtLeast = operatingSystemIsAtLeast
     }
 
     /// Always re-probes, and refreshes the cache `cachedStatus()` reads.
@@ -238,7 +280,11 @@ public struct DependencyChecker: Sendable {
             ntfs3gBinDirectory: ntfs3gBinDirectory(homebrewPrefix: prefix),
             macFUSEState: await macFUSEInstallState(homebrewPrefix: prefix),
             helperState: helperState,
-            fullDiskAccessGranted: await fullDiskAccessGranted(helperState: helperState)
+            fullDiskAccessGranted: await fullDiskAccessGranted(helperState: helperState),
+            fskitBackendAvailable: FuseBackendAvailability.fskitIsPlausible(
+                fileSystem: fileSystem,
+                operatingSystemIsAtLeast: operatingSystemIsAtLeast
+            )
         )
     }
 
@@ -292,11 +338,15 @@ public struct DependencyChecker: Sendable {
 
         guard caskInstalled else { return .notInstalled }
 
-        // The kext backend is loaded is the strongest available signal that
-        // macFUSE is approved and working (see KextInspector's doc comment
-        // for why there's no direct "approved but idle" check). Checked
-        // first since it's the backend this app actually uses; falls back to
-        // the System Extensions check for the (currently unused) FSKit path.
+        // A loaded kext is the strongest available signal that macFUSE is
+        // approved and working (see KextInspector's doc comment for why
+        // there's no direct "approved but idle" check).
+        //
+        // Note this only ever describes the *kext* backend. FSKit needs none
+        // of it, which is why `macFUSEUsable` stops requiring
+        // `.installedAndApproved` once `fskitBackendAvailable` is true — a
+        // machine using FSKit will sit at `.installedPendingApproval` forever
+        // and be perfectly functional.
         if await KextInspector.macFUSEIsLoaded(using: runner) {
             return .installedAndApproved
         }

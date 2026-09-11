@@ -32,6 +32,19 @@ enum SystemSettingsLink {
     /// waits for approval.
     case loginItems
 
+    /// General → Login Items & Extensions → File System Extensions: the switch
+    /// that turns on macFUSE's FSKit module.
+    ///
+    /// This is the one that replaces the Recovery Mode trip. It is a plain
+    /// toggle, no restart, and it is also the *only* way in — a registered,
+    /// PluginKit-enabled extension still refuses to mount ("File system
+    /// extension not enabled") until it is flipped here.
+    ///
+    /// Shares `loginItems`' anchors as its fallbacks: the sub-list has no
+    /// documented anchor of its own, so the realistic outcomes are "lands on
+    /// the right pane, one click away" or "lands on the parent pane".
+    case fileSystemExtensions
+
     private var candidates: [String] {
         switch self {
         case .privacyAndSecurity:
@@ -46,6 +59,12 @@ enum SystemSettingsLink {
             ]
         case .loginItems:
             [
+                "x-apple.systempreferences:com.apple.LoginItems-Settings.extension",
+                "x-apple.systempreferences:com.apple.settings.LoginItems",
+            ]
+        case .fileSystemExtensions:
+            [
+                "x-apple.systempreferences:com.apple.LoginItems-Settings.extension?FileSystemExtensions",
                 "x-apple.systempreferences:com.apple.LoginItems-Settings.extension",
                 "x-apple.systempreferences:com.apple.settings.LoginItems",
             ]

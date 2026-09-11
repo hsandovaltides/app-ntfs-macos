@@ -81,11 +81,30 @@ struct HelperRequestValidationTests {
         #expect(!HelperRequestValidation.isValidMountOptions(""))
     }
 
+    @Test("backend= is constrained by value, not just by key")
+    func backendValueIsAllowListed() {
+        // `backend` is unlike every other accepted key: `volname` is a string
+        // the mount displays, but `backend` decides which code actually
+        // performs the mount. A key-only rule would let a tampered request
+        // name any backend libfuse happens to support — now or after a
+        // macFUSE update — so only the one value the app itself sends passes.
+        #expect(HelperRequestValidation.isValidMountOptions("backend=fskit,windows_names"))
+        #expect(!HelperRequestValidation.isValidMountOptions("backend=kext,windows_names"))
+        #expect(!HelperRequestValidation.isValidMountOptions("backend=nfs,windows_names"))
+        #expect(!HelperRequestValidation.isValidMountOptions("backend,windows_names"))
+        #expect(!HelperRequestValidation.isValidMountOptions("backend=,windows_names"))
+        #expect(!HelperRequestValidation.isValidMountOptions("backend=fskit,allow_other"))
+    }
+
     @Test("The options Ntfs3gCommand produces pass validation")
     func producedOptionsAreValid() {
         let command = Ntfs3gCommand(runner: FakeProcessRunner(), homebrewPrefix: "/opt/homebrew")
         #expect(HelperRequestValidation.isValidMountOptions(command.mountOptions(volumeName: "MyDrive")))
         #expect(HelperRequestValidation.isValidMountOptions(command.mountOptions(volumeName: "weird,name\nhere")))
+        for backend in FuseBackend.allCases {
+            #expect(HelperRequestValidation.isValidMountOptions(
+                command.mountOptions(volumeName: "MyDrive", backend: backend)))
+        }
         #expect(HelperRequestValidation.isValidExecutablePath(command.executablePath))
         #expect(HelperRequestValidation.isValidExecutablePath(command.probeExecutablePath))
         #expect(HelperRequestValidation.isValidExecutablePath(command.fixExecutablePath))

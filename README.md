@@ -6,17 +6,52 @@ y los remonta automáticamente en modo lectura/escritura, usando
 como driver NTFS. macOS solo soporta NTFS en modo lectura de forma nativa —
 esta app no reimplementa un driver NTFS, orquesta el motor que ya existe.
 
-macFUSE 5.3+ ofrece dos backends: el kernel extension (kext) clásico, y uno
-nuevo basado en FSKit (user-space, sin kext, `-o backend=fskit`). Esta app usa
-el **backend kext clásico** — el backend FSKit se evaluó primero para evitar
-el paso de Recovery Mode, pero su registro vía PluginKit resultó no ser
-confiable en la práctica (confirmado con pruebas en máquina real; ver
-[macfuse/macfuse#1071](https://github.com/macfuse/macfuse/issues/1071)) y
-además tiene limitaciones activas (mountpoints restringidos a `/Volumes`,
-archivos siempre abiertos en lectura/escritura, la mayoría de las mount
-options tradicionales no implementadas todavía). Queda documentado como
-mejora futura una vez que ese backend madure — ver comentario en
-`Ntfs3gCommand.mountOptions(volumeName:)`.
+### Backends de FUSE
+
+macFUSE ofrece dos backends: el kernel extension (kext) clásico, y uno basado
+en **FSKit** (user-space, sin kext, `-o backend=fskit`, macOS 15.4+). La app
+**intenta FSKit primero y cae al kext** si no monta — ver `FuseBackend` y
+`DependencyStatus.mountBackends`.
+
+Esto importa porque el kext es lo que obliga a los dos pasos manuales que la
+app no puede automatizar: entrar en **Modo Recuperación** para bajar la
+política de seguridad, y aprobar la extensión de kernel, cada uno con su
+reinicio. Con FSKit no hace falta ninguno: el usuario activa un interruptor en
+Ajustes del Sistema y listo. Por eso, cuando FSKit está disponible, la app deja
+de exigir que macFUSE esté aprobado (`DependencyStatus.macFUSEUsable`).
+
+Dos cosas que conviene dejar dichas, porque contradicen lo que uno esperaría:
+
+- **No hace falta recompilar `ntfs-3g` ni usar `fuse-t`.** El binario tal cual
+  viene del tap `gromgit/homebrew-fuse` enlaza `libfuse.2.dylib` y aun así
+  acepta `-o backend=fskit`; la libfuse2 de macFUSE lo reenvía a `MFMount`.
+  Las notas de la 5.1.0 dicen que el backend FSKit es solo para libfuse3, pero
+  desde la 5.2.0 ambas pasan por el mismo camino (verificado ejecutando el
+  montaje y viendo la llamada a `MFMount`).
+- **`ntfs-3g` sale con código 0 aunque el montaje falle** — se demoniza, y el
+  proceso padre vuelve antes de que el hijo sepa el resultado (medido: un
+  montaje rechazado con "File system extension not enabled" sale 0 y sin
+  stderr). Por eso el pipeline confirma el montaje contra la tabla de montajes
+  (`statfs`) y no por el exit code. macFUSE 5.4.0 arregla esto
+  ([macfuse#1178](https://github.com/macfuse/macfuse/issues/1178)), pero la
+  comprobación se queda: cuesta un `statfs` y es lo que hace correcto el
+  pipeline en las versiones de macFUSE que la gente ya tiene instaladas.
+
+El paso que sí queda es activar la extensión: **Ajustes del Sistema → General →
+Elementos de inicio y extensiones → Extensiones del sistema de archivos →
+macFUSE**. No hay API ni comando que lo haga por el usuario. Si macFUSE ni
+siquiera aparece en esa lista, sus extensiones quedaron sin registrar en
+PluginKit — algo bastante común, y que `macfuse install --components
+file-system-extensions --force` no arregla (sale 0 sin registrar nada). Para
+eso está `Scripts/register-fskit.sh`, que es el workaround de
+[macfuse#1071](https://github.com/macfuse/macfuse/issues/1071); la app ofrece
+el mismo comando desde el menú cuando un montaje falla.
+
+Limitaciones conocidas de FSKit, ninguna bloqueante acá: los mountpoints tienen
+que estar bajo `/Volumes` (que es lo único que
+`HelperRequestValidation.isValidMountPath` acepta de todos modos) y varias
+mount options tradicionales todavía no están implementadas (`volname` puede
+ignorarse — cosmético).
 
 El montaje real en escritura requiere privilegios de root (`ntfs-3g` se niega
 a montar como usuario normal — ver "Arquitectura" abajo), así que la app
@@ -83,10 +118,28 @@ instalar y aprobar igual.
 brew install --cask macfuse
 ```
 
-Como usamos el backend kext clásico de macFUSE, hace falta un paso único de
-**Recovery Mode** para permitir kernel extensions de terceros (en Apple
-Silicon, el ajuste general de "seguridad reducida" no alcanza por sí solo —
-confirmado en pruebas reales):
+### Activar la extensión FSKit (camino recomendado, sin reinicios)
+
+En macOS 15.4 o superior con un macFUSE que traiga su módulo FSKit, este es el
+único paso que queda:
+
+**Ajustes del Sistema → General → Elementos de inicio y extensiones →
+Extensiones del sistema de archivos → activar macFUSE.**
+
+Si macFUSE no aparece en esa lista, registrá sus extensiones primero:
+
+```sh
+./Scripts/register-fskit.sh
+```
+
+(La app ofrece las dos cosas —abrir el panel y correr el registro— desde el
+menú cuando un montaje falla.)
+
+### Aprobar el kext (solo si no podés usar FSKit)
+
+Con el backend kext clásico hace falta un paso único de **Recovery Mode** para
+permitir kernel extensions de terceros (en Apple Silicon, el ajuste general de
+"seguridad reducida" no alcanza por sí solo — confirmado en pruebas reales):
 
 1. Apagá el Mac. Mantené presionado el botón de encendido/Touch ID hasta ver
    "Cargando opciones de arranque" y entrá a **Utilidad de Seguridad de
@@ -264,9 +317,17 @@ Otras limitaciones que siguen abiertas:
   Ventura/Sonoma/Sequoia/Tahoe. Esto aplica a la aprobación de macFUSE, la
   del helper (Elementos de inicio y extensiones) y la de Acceso completo al
   disco.
-- El parsing de `systemextensionsctl list` (para saber si macFUSE está
-  aprobado vía el backend FSKit, hoy sin usar) es por substring, no hay una
-  API estructurada de Apple para esto.
+- El parsing de `systemextensionsctl list` (para saber si la extensión de
+  sistema de macFUSE está aprobada) es por substring, no hay una API
+  estructurada de Apple para esto. Con el backend FSKit ese estado deja de ser
+  bloqueante: una máquina que monta por FSKit se queda en "instalado, sin
+  aprobar" para siempre y funciona igual.
+- La detección de FSKit (`FuseBackendAvailability`) responde "¿puede llegar a
+  funcionar?" —versión de macOS y extensión presente en disco—, no "¿está
+  activado?". Si está registrada pero apagada no hay forma de saberlo sin
+  intentar el montaje: incluso con `pluginkit` reportándola habilitada, el
+  montaje falla con "File system extension not enabled" (macFUSE 5.3.3 /
+  macOS 26.6.2). El pipeline lo resuelve intentando y cayendo al kext.
 
 Checklist de hardware real — todo confirmado funcionando:
 

@@ -31,23 +31,33 @@ struct Ntfs3gCommand: PrivilegedMounting {
     var probeExecutablePath: String { "\(binDirectory)/ntfs-3g.probe" }
     var fixExecutablePath: String { "\(binDirectory)/ntfsfix" }
 
-    /// Uses macFUSE's classic kext backend (the default when `backend=fskit`
-    /// is omitted). FSKit was tried first to avoid the Recovery Mode "reduced
-    /// security" toggle, but its file-system-extension registration is
-    /// unreliable on current macOS/macFUSE builds (confirmed via hands-on
-    /// testing and macfuse/macfuse#1071 — PluginKit sometimes never surfaces
-    /// the approval prompt) and it carries more active limitations besides
-    /// (mountpoints restricted to /Volumes, no traditional mount options,
-    /// files always opened read/write). The kext path needs the one-time
-    /// Recovery Mode toggle documented in the README, but is otherwise the
-    /// proven, fully-working backend. `allow_other`/uid/gid overrides are
+    /// Mount options for one backend. `MountManager` asks for `.fskit` first
+    /// and falls back to `.kext`, so this is called once per attempt.
+    ///
+    /// The backend choice is the only difference between the two: everything
+    /// else here is backend-agnostic. `allow_other`/uid/gid overrides are
     /// intentionally omitted — the mount is only ever accessed by the
     /// logged-in user anyway.
-    func mountOptions(volumeName: String) -> String {
+    ///
+    /// A previous revision hardcoded the kext backend, on the grounds that
+    /// FSKit's extension registration was unreliable (macfuse/macfuse#1071).
+    /// That issue is closed, and the failure it describes is now recoverable
+    /// from within the app — see `FuseBackend` and `Scripts/register-fskit.sh`
+    /// — so FSKit is attempted again, with the kext kept as the fallback
+    /// rather than the default. The FSKit limitations that motivated the
+    /// original decision are either already satisfied (mount points must sit
+    /// under `/Volumes`, which `HelperRequestValidation.isValidMountPath`
+    /// enforces anyway) or cosmetic (`volname` may be ignored).
+    func mountOptions(volumeName: String, backend: FuseBackend = .kext) -> String {
         var options = ["windows_names", "auto_xattr", "local_lockfile"]
         let sanitized = Self.sanitizedVolumeName(volumeName)
         if !sanitized.isEmpty {
             options.insert("volname=\(sanitized)", at: 0)
+        }
+        // First, so a debug log of the option string leads with the backend
+        // that produced the behaviour being debugged.
+        if let token = backend.mountOptionToken {
+            options.insert(token, at: 0)
         }
         return options.joined(separator: ",")
     }

@@ -41,13 +41,15 @@ struct DependencyWarningView: View {
                     }
                 }
 
-                switch status.macFUSEState {
-                case .installedPendingApproval:
+                // Only ever asked for when the kernel extension is the only way
+                // in. Where FSKit is available the kext is never loaded, so
+                // demanding its approval would send the user to Recovery Mode
+                // for a backend the app is not going to use — and
+                // `macFUSEUsable` already stops treating it as a blocker.
+                if status.macFUSEState == .installedPendingApproval, !status.fskitBackendAvailable {
                     Text("macFUSE necesita aprobación en Ajustes del Sistema → Privacidad y Seguridad")
                         .font(.callout)
                     Button("Abrir Privacidad y Seguridad") { SystemSettingsLink.privacyAndSecurity.open() }
-                default:
-                    EmptyView()
                 }
 
                 switch status.helperState {
