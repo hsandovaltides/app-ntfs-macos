@@ -32,7 +32,18 @@ jobs:
       # and the release ships without them.
       - name: Install ntfs-3g (embedded into the app at build time)
         run: |
+          # The formula carries a fatal `MacfuseRequirement` that checks for
+          # /usr/local/include/fuse.h, so the cask has to be installed even
+          # though the runner never mounts anything. Nothing is loaded here —
+          # only the headers matter — so no kext approval is involved.
+          brew install --cask macfuse
           brew tap gromgit/homebrew-fuse
+          # Homebrew 6.0 refuses to load formulae from third-party taps until
+          # they are explicitly trusted ("Refusing to load formula ... from
+          # untrusted tap"). Trusting the single formula we install rather than
+          # the whole tap (`brew trust gromgit/fuse`) keeps the other 35 out of
+          # it. Runs after the tap, since the name has to resolve.
+          brew trust --formula gromgit/fuse/ntfs-3g-mac
           brew install ntfs-3g-mac
 
       - name: Generate Xcode project

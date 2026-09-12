@@ -47,6 +47,7 @@ if [ ! -x "${MKNTFS}" ]; then
   echo "Install it with:" >&2
   echo "  brew install --cask macfuse" >&2
   echo "  brew tap gromgit/homebrew-fuse" >&2
+  echo "  brew trust --formula gromgit/fuse/ntfs-3g-mac" >&2
   echo "  brew install ntfs-3g-mac" >&2
   exit 1
 fi

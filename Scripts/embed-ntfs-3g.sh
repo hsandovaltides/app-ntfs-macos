@@ -51,7 +51,7 @@ resolve_source_directory() {
 
 SOURCE_DIR="$(resolve_source_directory)"
 if [ -z "$SOURCE_DIR" ]; then
-    INSTALL_HINT="Install it with: brew tap gromgit/homebrew-fuse && brew install ntfs-3g-mac"
+    INSTALL_HINT="Install it with: brew tap gromgit/homebrew-fuse && brew trust --formula gromgit/fuse/ntfs-3g-mac && brew install ntfs-3g-mac"
     # For a local build this is a warning, not an error: the app still builds
     # and runs, it just falls back to requiring Homebrew on the user's machine.
     # Failing here would block anyone who only wants to compile the app.

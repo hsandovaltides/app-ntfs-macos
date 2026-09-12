@@ -90,6 +90,15 @@ struct DependencyWarningView: View {
         let command: String
         let includesMacFUSE: Bool
 
+        /// Homebrew 6.0 stopped loading formulae from third-party taps unless
+        /// they are trusted, so tapping alone now ends in "Refusing to load
+        /// formula ... from untrusted tap". Only this one formula is trusted,
+        /// not the whole tap. Harmless to re-run: `brew trust` is idempotent,
+        /// and an older Homebrew never gets here because `brew tap` updates
+        /// itself first.
+        static let tapAndTrust =
+            "brew tap gromgit/homebrew-fuse && brew trust --formula gromgit/fuse/ntfs-3g-mac"
+
         init?(status: DependencyStatus) {
             let needsMacFUSE = status.macFUSEState == .notInstalled
             let needsNtfs3g = !status.ntfs3gInstalled
@@ -102,10 +111,10 @@ struct DependencyWarningView: View {
                 command = "brew install --cask macfuse"
             case (false, true):
                 title = "Instalar ntfs-3g"
-                command = "brew tap gromgit/homebrew-fuse && brew install ntfs-3g-mac"
+                command = "\(Self.tapAndTrust) && brew install ntfs-3g-mac"
             case (true, true):
                 title = "Instalar macFUSE + ntfs-3g"
-                command = "brew install --cask macfuse && brew tap gromgit/homebrew-fuse && brew install ntfs-3g-mac"
+                command = "brew install --cask macfuse && \(Self.tapAndTrust) && brew install ntfs-3g-mac"
             }
             includesMacFUSE = needsMacFUSE
         }

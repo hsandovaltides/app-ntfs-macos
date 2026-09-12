@@ -93,8 +93,15 @@ hay que usar la formula `ntfs-3g-mac` del tap `gromgit/homebrew-fuse`:
 
 ```sh
 brew tap gromgit/homebrew-fuse
+brew trust --formula gromgit/fuse/ntfs-3g-mac
 brew install ntfs-3g-mac
 ```
+
+El `brew trust` hace falta desde Homebrew 6.0: los taps de terceros ya no se
+cargan sin confiar en ellos explícitamente, y sin esa línea el `install` corta
+con *«Refusing to load formula … from untrusted tap»*. Confiar en la fórmula
+concreta en vez de en el tap entero (`brew trust gromgit/fuse`) deja fuera las
+otras 35 fórmulas del tap.
 
 Si no está, el build no falla: emite un warning y produce una app que seguirá
 pidiendo Homebrew en la máquina del usuario. Eso está bien para compilar en
