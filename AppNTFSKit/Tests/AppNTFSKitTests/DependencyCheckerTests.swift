@@ -115,7 +115,41 @@ struct DependencyCheckerTests {
 
         // Probe would say `false`, but with the helper still pending approval
         // that failure is meaningless — it must not surface as "FDA missing".
-        #expect(status.fullDiskAccessGranted == true)
+        // Reported as `nil` ("couldn't ask"), not `true` ("granted"), so a
+        // later mount failure can still name it as a suspect.
+        #expect(status.fullDiskAccessGranted == nil)
+        #expect(status.fullDiskAccessDenied == false)
+    }
+
+    @Test("A probe that can't reach the helper reports unknown, and doesn't block readiness")
+    func fullDiskAccessProbeFailureIsUnknownNotDenied() async {
+        let fileSystem = FakeFileSystemProbe(
+            existingPaths: ["/Library/Filesystems/macfuse.fs"],
+            executablePaths: [
+                "/opt/homebrew/bin/brew",
+                "/opt/homebrew/opt/ntfs-3g-mac/bin/ntfs-3g"
+            ]
+        )
+        let runner = FakeProcessRunner(responses: [
+            "/usr/bin/systemextensionsctl": ProcessResult(
+                exitCode: 0,
+                standardOutput: SampleSystemExtensionsOutput.macFUSEApproved,
+                standardError: ""
+            )
+        ])
+
+        let status = await DependencyChecker(
+            runner: runner,
+            fileSystem: fileSystem,
+            helperStatusProbe: FakeHelperServiceStatusProbe(state: .installedAndApproved),
+            fullDiskAccessProbe: FakeFullDiskAccessProbe(granted: nil)
+        ).checkAll()
+
+        #expect(status.fullDiskAccessGranted == nil)
+        #expect(status.fullDiskAccessDenied == false)
+        // An XPC hiccup must not turn into a permission banner, nor stop the
+        // app from attempting the mount.
+        #expect(status.isReady == true)
     }
 
     @Test("Falls back from /opt/homebrew to /usr/local when only Intel prefix has brew")

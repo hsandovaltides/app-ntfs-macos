@@ -23,11 +23,21 @@ public struct DependencyStatus: Sendable, Equatable {
     /// one-time TCC grant that being root doesn't substitute for (confirmed
     /// on real hardware: `EPERM` opening `/dev/rdiskN` from the root helper
     /// until its exact path was added to Privacy & Security → Full Disk
-    /// Access). Defaults to `true` when unset/unchecked (e.g. no
-    /// `FullDiskAccessProbing` wired in, as in tests; or the helper not yet
-    /// approved, so there's nothing to ask) rather than blocking on a check
-    /// that couldn't run.
-    public let fullDiskAccessGranted: Bool
+    /// Access).
+    ///
+    /// Three-valued. `true` and `false` are the answers the probe gave; `nil`
+    /// means it could not be asked — the XPC round trip failed, or the helper
+    /// is not approved yet so there is nothing to ask.
+    ///
+    /// The distinction is not academic. This used to collapse "could not ask"
+    /// into `true`, which reads correctly at the banner (do not nag about a
+    /// permission you failed to check) but wrongly everywhere else: `isReady`
+    /// went true, the pipeline ran, the probe hit `EPERM`, and the user was
+    /// told "No se pudo montar en escritura" — the one message that does not
+    /// mention the permission that was actually missing. `nil` keeps the banner
+    /// quiet exactly as before while letting `MountManager` name Full Disk
+    /// Access as a suspect when the mount then fails.
+    public let fullDiskAccessGranted: Bool?
     /// Whether macFUSE's FSKit backend is worth attempting — macOS 15.4+ with
     /// macFUSE's file-system extension present on disk. See
     /// `FuseBackendAvailability`, which deliberately does *not* try to
@@ -66,11 +76,17 @@ public struct DependencyStatus: Sendable, Equatable {
     /// Homebrew is deliberately absent from this list. It is a delivery
     /// mechanism for ntfs-3g, not a requirement of its own, and with the
     /// binaries embedded a machine with no Homebrew is a perfectly ready one.
+    /// Whether Full Disk Access is known to be missing — the only state that
+    /// warrants the banner. An unknown (`nil`) result must not raise it: the
+    /// most common cause is a helper that is not approved yet, which already
+    /// has a banner of its own.
+    public var fullDiskAccessDenied: Bool { fullDiskAccessGranted == false }
+
     public var isReady: Bool {
         ntfs3gInstalled
             && macFUSEUsable
             && helperState == .installedAndApproved
-            && fullDiskAccessGranted
+            && !fullDiskAccessDenied
     }
 
     public init(
@@ -78,7 +94,7 @@ public struct DependencyStatus: Sendable, Equatable {
         ntfs3gBinDirectory: String?,
         macFUSEState: InstallState,
         helperState: InstallState,
-        fullDiskAccessGranted: Bool = true,
+        fullDiskAccessGranted: Bool? = true,
         fskitBackendAvailable: Bool = false
     ) {
         self.homebrewPrefix = homebrewPrefix
@@ -96,7 +112,7 @@ public struct DependencyStatus: Sendable, Equatable {
         ntfs3gInstalled: Bool,
         macFUSEState: InstallState,
         helperState: InstallState,
-        fullDiskAccessGranted: Bool = true,
+        fullDiskAccessGranted: Bool? = true,
         fskitBackendAvailable: Bool = false
     ) {
         self.init(
@@ -117,7 +133,11 @@ public struct DependencyStatus: Sendable, Equatable {
 /// itself. `AppNTFS/Helper/PrivilegedHelperMounter` is the real
 /// implementation, injected from the app target.
 public protocol FullDiskAccessProbing: Sendable {
-    func hasFullDiskAccess() async -> Bool
+    /// `nil` when the probe itself could not be carried out (no connection to
+    /// the helper, no reply) — distinct from `false`, which is the helper
+    /// answering that the grant is missing. See
+    /// `DependencyStatus.fullDiskAccessGranted`.
+    func hasFullDiskAccess() async -> Bool?
 }
 
 /// Thin seam over SMAppService so DependencyChecker can be unit tested
@@ -159,7 +179,7 @@ public struct DefaultFileSystemProbe: FileSystemProbing {
 
 extension DependencyStatus: CustomStringConvertible {
     public var description: String {
-        "homebrew=\(homebrewPrefix ?? "missing") ntfs3g=\(ntfs3gBinDirectory ?? "missing") macFUSE=\(macFUSEState) helper=\(helperState) fullDiskAccess=\(fullDiskAccessGranted) backends=\(mountBackends.map(\.rawValue).joined(separator: ">"))"
+        "homebrew=\(homebrewPrefix ?? "missing") ntfs3g=\(ntfs3gBinDirectory ?? "missing") macFUSE=\(macFUSEState) helper=\(helperState) fullDiskAccess=\(fullDiskAccessGranted.map { "\($0)" } ?? "unknown") backends=\(mountBackends.map(\.rawValue).joined(separator: ">"))"
     }
 }
 
@@ -167,7 +187,12 @@ public struct DependencyChecker: Sendable {
     /// Apple Silicon vs Intel Homebrew prefixes; checked in order at runtime
     /// rather than picked via #if arch(), since the binary could run under
     /// Rosetta or the user could have a non-default prefix.
-    static let knownHomebrewPrefixes = ["/opt/homebrew", "/usr/local"]
+    ///
+    /// Aliases `HelperRequestValidation`'s list rather than repeating it: what
+    /// this checker is willing to *find* a binary under and what the root
+    /// helper is willing to *execute* from have to be the same set, and two
+    /// literals kept in step by a comment is not the same thing as one literal.
+    static var knownHomebrewPrefixes: [String] { HelperRequestValidation.allowedHomebrewPrefixes }
 
     /// Must match `AppNTFSHelperProtocol.helperLaunchDaemonPlistName`. Kept as
     /// a literal here (not a shared import) because AppNTFSKit is a
@@ -292,10 +317,15 @@ public struct DependencyChecker: Sendable {
     /// it's only meaningful once the helper is installed and approved. Before
     /// that, the call is guaranteed to fail for an unrelated reason (no
     /// approved daemon to answer) — treating that as "FDA missing" would show
-    /// a spurious banner on top of the "approve the helper" one. `true` here
-    /// just defers the check; `helperState` already gates readiness.
-    private func fullDiskAccessGranted(helperState: InstallState) async -> Bool {
-        guard let fullDiskAccessProbe, helperState == .installedAndApproved else { return true }
+    /// a spurious banner on top of the "approve the helper" one.
+    ///
+    /// That case reports `nil` ("not asked") rather than `true` ("granted"):
+    /// both keep the banner hidden, but only `nil` lets a later mount failure
+    /// say that the permission was never verified. Tests with no probe wired in
+    /// keep getting `true`, so `isReady` stays true for them as before.
+    private func fullDiskAccessGranted(helperState: InstallState) async -> Bool? {
+        guard let fullDiskAccessProbe else { return true }
+        guard helperState == .installedAndApproved else { return nil }
         return await fullDiskAccessProbe.hasFullDiskAccess()
     }
 

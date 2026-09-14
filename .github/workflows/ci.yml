@@ -1,0 +1,63 @@
+name: CI
+
+# The app and helper targets only exist inside the generated Xcode project, so
+# nothing on a developer's machine type-checks them without Xcode installed —
+# and the release workflow was, until now, the first thing that ever compiled
+# them. A broken `AppNTFS/` or `AppNTFSHelper/` file therefore reached `main`
+# and failed during the release build, after the merge. This runs the same
+# compile (and the package's tests) before the merge instead.
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package-tests:
+    name: AppNTFSKit tests
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # No Homebrew dependencies: AppNTFSKit's tests fake every process call
+      # and filesystem probe (see Tests/AppNTFSKitTests/Fakes.swift), so
+      # nothing here needs macFUSE or ntfs-3g to exist.
+      - name: Run tests
+        working-directory: AppNTFSKit
+        run: swift test
+
+  app-build:
+    name: App + helper build
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      # Deliberately without REQUIRE_EMBEDDED_NTFS3G and without installing the
+      # tap: Scripts/embed-ntfs-3g.sh degrades to a warning when the keg isn't
+      # there, which keeps this job to a plain compile. Whether the binaries
+      # actually made it into the bundle is the release workflow's "Verify
+      # ntfs-3g was embedded" step, on the artifact that ships.
+      #
+      # CODE_SIGNING_ALLOWED=NO because the signing certificate lives in repo
+      # secrets, which a pull request from a fork cannot read.
+      - name: Build
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project AppNTFS.xcodeproj \
+            -scheme AppNTFS \
+            -configuration Debug \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            build

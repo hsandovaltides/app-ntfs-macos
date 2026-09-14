@@ -61,7 +61,12 @@ struct DependencyWarningView: View {
                     EmptyView()
                 }
 
-                if status.helperState == .installedAndApproved, !status.fullDiskAccessGranted {
+                // `fullDiskAccessDenied` rather than "not granted": the helper
+                // may simply not have been reachable to be asked, and sending
+                // somebody to System Settings for a permission they already
+                // gave — because of one dropped XPC call — teaches them to
+                // ignore this panel.
+                if status.helperState == .installedAndApproved, status.fullDiskAccessDenied {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Falta \"Acceso completo al disco\" para el helper — sin esto, macOS bloquea la lectura del disco incluso para el proceso root.")
                             .font(.callout)

@@ -2,8 +2,14 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <!-- Every string in this app — menu items, notifications, TCC usage
+         descriptions, MountError — is written in Spanish. Declaring `en` told
+         macOS the opposite, which is what picks the fallback language when a
+         localization is missing and what the App Store / Finder report as the
+         app's language. There is no .lproj yet, so this is the only thing
+         standing between the bundle and an accurate answer. -->
     <key>CFBundleDevelopmentRegion</key>
-    <string>en</string>
+    <string>es</string>
     <key>CFBundleExecutable</key>
     <string>$(EXECUTABLE_NAME)</string>
     <key>CFBundleIdentifier</key>

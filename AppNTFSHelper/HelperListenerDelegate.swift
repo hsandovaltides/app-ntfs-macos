@@ -76,7 +76,16 @@ final class HelperListenerDelegate: NSObject, NSXPCListenerDelegate {
             return nil
         }
         var token = audit_token_t()
-        boxed.getValue(&token)
+        // `getValue(_:size:)`, not the one-argument `getValue(_:)`: the latter
+        // is deprecated precisely because it copies however many bytes the
+        // NSValue happens to hold into a buffer whose size it was never told.
+        // The payload here comes from Foundation via KVC on an undeclared
+        // property, so pinning the length is the difference between a bounded
+        // copy and trusting an unverified size — in a process running as root.
+        withUnsafeMutableBytes(of: &token) { buffer in
+            guard let base = buffer.baseAddress else { return }
+            boxed.getValue(base, size: buffer.count)
+        }
         return token
     }
 

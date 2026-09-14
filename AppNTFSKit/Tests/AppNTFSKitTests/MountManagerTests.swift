@@ -51,7 +51,7 @@ struct MountManagerTests {
             // time it verifies. The verification is not optional: ntfs-3g
             // daemonizes and exits 0 even when the mount failed, so the mount
             // table is the only thing that can tell the two apart.
-            mountPointInspector: .mountedAfterMounting(Self.volume.mountPath),
+            mountPointInspector: FakeMountPointInspector.mountedAfterMounting(Self.volume.mountPath),
             logger: AppLogger()
         )
 
@@ -405,7 +405,7 @@ struct MountManagerTests {
                 fileSystem: readyFileSystem(),
                 helperStatusProbe: FakeHelperServiceStatusProbe(state: .installedAndApproved)
             ),
-            mountPointInspector: .mountedAfterMounting(Self.volume.mountPath),
+            mountPointInspector: FakeMountPointInspector.mountedAfterMounting(Self.volume.mountPath),
             logger: AppLogger()
         )
 

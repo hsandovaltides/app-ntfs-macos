@@ -85,9 +85,11 @@ struct FakeHelperServiceStatusProbe: HelperServiceStatusProbing {
 }
 
 struct FakeFullDiskAccessProbe: FullDiskAccessProbing {
-    let granted: Bool
+    /// `nil` stands in for a probe that couldn't run at all (no helper
+    /// connection), which the real one reports as distinct from "denied".
+    let granted: Bool?
 
-    func hasFullDiskAccess() async -> Bool { granted }
+    func hasFullDiskAccess() async -> Bool? { granted }
 }
 
 enum SampleSystemExtensionsOutput {

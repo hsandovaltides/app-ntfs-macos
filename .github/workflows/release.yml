@@ -14,7 +14,23 @@ permissions:
   contents: write
 
 jobs:
+  # The release pipeline used to build straight from a merge commit nothing had
+  # ever run the tests against, so a regression in AppNTFSKit shipped as a
+  # tagged release. `needs: test` below makes a red test stop the tag from
+  # being created at all.
+  test:
+    name: AppNTFSKit tests
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run tests
+        working-directory: AppNTFSKit
+        run: swift test
+
   release:
+    needs: test
     runs-on: macos-15
     steps:
       - name: Checkout
@@ -183,3 +199,27 @@ jobs:
           gh release create "${VERSION}" AppNTFS.zip \
             --title "AppNTFS ${VERSION}" \
             --notes "⚠️ Build sin notarizar (cuenta de desarrollador gratuita, sin Developer ID). Al abrirlo por primera vez macOS puede avisar que es de un desarrollador no identificado — clic derecho → Abrir, o \`xattr -dr com.apple.quarantine AppNTFS.app\` después de descomprimir."
+
+      # The cask used to be pinned to `version :latest` + `sha256 :no_check`,
+      # which meant Homebrew downloaded whatever was behind the "latest"
+      # redirect and verified nothing about it: `brew upgrade` could not tell
+      # an up-to-date install from a stale one, and a tampered or truncated
+      # zip would have installed silently. Pinning both is only sustainable if
+      # something updates them on every release, so that something is here.
+      - name: Update the cask to this release
+        env:
+          VERSION: ${{ steps.version.outputs.plainVersion }}
+        run: |
+          checksum="$(shasum -a 256 AppNTFS.zip | cut -d' ' -f1)"
+          /usr/bin/sed -i '' \
+            -e "s|^  version \".*\"$|  version \"${VERSION}\"|" \
+            -e "s|^  sha256 \".*\"$|  sha256 \"${checksum}\"|" \
+            Casks/appntfs.rb
+          git diff --quiet Casks/appntfs.rb && { echo "Cask already current."; exit 0; }
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/appntfs.rb
+          git commit -m "chore: point the cask at v${VERSION} [skip ci]"
+          # The tag above already captured the released commit, so this lands
+          # on top of it without changing what was built.
+          git push origin HEAD:main

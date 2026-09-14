@@ -38,16 +38,25 @@ final class PrivilegedHelperMounter: PrivilegedMounting, FullDiskAccessProbing, 
         return ProcessResult(exitCode: result.exitCode, standardOutput: result.standardOutput, standardError: result.standardError)
     }
 
-    /// `false` on any failure (connection drop, helper not approved yet,
-    /// etc.) rather than throwing — a transient XPC hiccup here shouldn't
-    /// itself surface as a Full Disk Access warning to the user; those
-    /// failure modes are already reported by `helperState` separately.
-    func hasFullDiskAccess() async -> Bool {
-        (try? await withHelperProxy { proxy, resumeGuard, continuation in
+    /// `nil` on any failure (connection drop, helper not approved yet, etc.)
+    /// rather than throwing or guessing — "the helper couldn't be asked" is a
+    /// different fact from "the helper answered no", and collapsing the two
+    /// gets somebody sent to System Settings over a transient XPC hiccup.
+    /// `DependencyStatus` keeps them apart: only an actual `false` raises the
+    /// warning banner, while `nil` stays quiet until a mount fails and
+    /// `MountManager` names it as a suspect.
+    ///
+    /// The short deadline is the point: this runs on the dependency-refresh
+    /// path, and the whole question is whether the helper is answering *now*.
+    /// The inherited 180 s budget belongs to a mount that may legitimately be
+    /// grinding through a large volume; a permission check that hasn't come
+    /// back in a few seconds has already answered "unreachable".
+    func hasFullDiskAccess() async -> Bool? {
+        try? await withHelperProxy(timeout: .seconds(15)) { proxy, resumeGuard, continuation in
             proxy.checkFullDiskAccess { granted in
                 resumeGuard.resumeOnce { continuation.resume(returning: granted) }
             }
-        }) ?? true
+        }
     }
 
     func mountReadWrite(

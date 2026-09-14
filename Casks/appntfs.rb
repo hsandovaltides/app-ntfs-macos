@@ -1,12 +1,23 @@
 cask "appntfs" do
-  version :latest
-  sha256 :no_check
+  # Both lines are rewritten by the release workflow's "Update the cask to this
+  # release" step. Do not put them back to `:latest` / `:no_check`: without a
+  # real version `brew upgrade` has no way to tell an outdated install from a
+  # current one, and without a checksum Homebrew installs whatever bytes the
+  # download produced.
+  version "0.1.7"
+  sha256 "fcce37f30d6317d7d0ce335c7d132980b878ec8e32650c806256d300a23ed232"
 
-  url "https://github.com/hsandovaltides/app-ntfs-macos/releases/latest/download/AppNTFS.zip"
+  url "https://github.com/hsandovaltides/app-ntfs-macos/releases/download/v#{version}/AppNTFS.zip"
   name "AppNTFS"
   desc "Menu bar app that auto-remounts NTFS drives read-write on macOS"
   homepage "https://github.com/hsandovaltides/app-ntfs-macos"
 
+  livecheck do
+    url :url
+    strategy :github_latest
+  end
+
+  depends_on macos: ">= :sequoia"
   depends_on cask: "macfuse"
 
   app "AppNTFS.app"
