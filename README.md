@@ -400,10 +400,56 @@ después la app, igual que exige la validación de firma en
      keychain temporal de CI.
    - `MACOS_SIGNING_IDENTITY` — el nombre exacto del paso 3.
 
-Si más adelante sacás una cuenta de Developer Program paga, el reemplazo es
-sencillo: cambiar `DEVELOPMENT_TEAM` en `project.yml`, repetir estos pasos
-con el certificado "Developer ID Application" nuevo, y agregar un paso de
-`notarytool submit --wait` + `stapler staple` después de firmar.
+### Notarización (pendiente — requiere cuenta paga)
+
+Esto es lo único de la lista de mejoras que **no se puede implementar acá**: la
+notarización exige una cuenta del Apple Developer Program (US$99/año) y un
+certificado "Developer ID Application". Sin eso, `notarytool` rechaza el envío;
+no hay forma de emularlo ni de saltearlo. Queda documentado el cambio exacto
+para cuando exista la cuenta:
+
+1. `project.yml` → `DEVELOPMENT_TEAM` con el Team ID de la cuenta paga.
+2. Repetir los pasos de secrets de arriba con el `.p12` de
+   "Developer ID Application", y agregar tres secrets más:
+   `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` (generada en appleid.apple.com) y
+   `APPLE_TEAM_ID`.
+3. En `release.yml`, después del paso "Sign app and helper" y **antes** de
+   "Package":
+
+   ```yaml
+   - name: Notarize
+     env:
+       APPLE_ID: ${{ secrets.APPLE_ID }}
+       APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+     run: |
+       APP="build/Build/Products/Release/AppNTFS.app"
+       # notarytool sube un archivo, no un bundle: se zipea, se envía y se
+       # grapa el ticket al .app original (no al zip).
+       ditto -c -k --sequesterRsrc --keepParent "${APP}" notarize.zip
+       xcrun notarytool submit notarize.zip --wait \
+         --apple-id "${APPLE_ID}" \
+         --password "${APPLE_PASSWORD}" \
+         --team-id "${APPLE_TEAM_ID}"
+       xcrun stapler staple "${APP}"
+       xcrun stapler validate "${APP}"
+   ```
+
+   El "Package" que sigue vuelve a comprimir el `.app` ya grapado, así que el
+   zip publicado lleva el ticket adentro.
+4. Con eso se puede borrar el `postflight` de `Casks/appntfs.rb` que limpia la
+   cuarentena, y el `caveats` que avisa de la firma de desarrollo — dejan de
+   hacer falta.
+
+### Qué corre antes del release
+
+`.github/workflows/ci.yml` corre en cada pull request y en cada push a una rama
+que no sea `main`: los tests de AppNTFSKit (`swift test`) y una compilación sin
+firmar de la app y el helper (`xcodegen generate` + `xcodebuild`). Eso último
+importa más de lo que parece — los targets `AppNTFS` y `AppNTFSHelper` solo
+existen dentro del proyecto Xcode generado, así que sin Xcode instalado nada los
+type-chequea localmente. `release.yml` además depende de un job de tests
+(`needs: test`), de modo que un test en rojo impide que se cree el tag.
 
 ## Instalar vía Homebrew
 
@@ -411,10 +457,33 @@ Este mismo repo funciona como tap (no hace falta uno separado):
 
 ```sh
 brew tap hsandovaltides/app-ntfs-macos https://github.com/hsandovaltides/app-ntfs-macos.git
+brew trust --cask hsandovaltides/app-ntfs-macos/appntfs
 brew install --cask appntfs
 ```
 
-El cask (`Casks/appntfs.rb`) apunta siempre al último release y le saca el
-atributo de cuarentena automáticamente (la app sigue firmada, solo no está
-notarizada — ver "Distribución" arriba). Instala `macfuse` como dependencia
-del cask; ntfs-3g viene dentro de la app y no requiere ningún paso extra.
+La línea de `brew trust` hace falta desde Homebrew 6.0, que no carga nada de un
+tap de terceros sin confianza explícita — sin ella el `install` corta con
+*«Refusing to load cask appntfs from untrusted tap»*. La confianza queda
+guardada, así que basta con darla una vez.
+
+`brew upgrade --cask appntfs` alcanza para actualizar. El cask lleva `version`
+y `sha256` reales, fijados a un tag concreto: Homebrew compara la versión
+instalada contra la del cask y verifica el checksum de lo que descarga. El paso
+"Update the cask to this release" de `release.yml` reescribe esas dos líneas y
+commitea el cambio en cada release, así que no hay que tocarlas a mano.
+
+> Antes el cask era `version :latest` + `sha256 :no_check`. Eso significaba dos
+> cosas: `brew upgrade` no podía distinguir una instalación vieja de una al día
+> (había que hacer `brew reinstall`, o `--greedy`), y Homebrew instalaba los
+> bytes que viniera que llegaran sin verificar nada.
+
+El cask le saca el atributo de cuarentena automáticamente (la app sigue firmada,
+solo no está notarizada — ver "Distribución" arriba). Instala `macfuse` como
+dependencia del cask; ntfs-3g viene dentro de la app y no requiere ningún paso
+extra.
+
+La app además consulta `releases/latest` de la API pública de GitHub al arrancar
+(y cuando se usa "Buscar actualizaciones" en el menú). Si hay algo más nuevo
+aparece una entrada "Actualizar a X.Y.Z…" que abre la página del release. Es
+solo un aviso: no descarga ni instala nada, y no manda ningún dato — es un GET
+sin autenticar a un repositorio público.

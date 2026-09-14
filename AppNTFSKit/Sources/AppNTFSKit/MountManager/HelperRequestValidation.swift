@@ -30,8 +30,19 @@ import Foundation
 /// needs admin rights the attacker would not otherwise have. It is also
 /// matched as an exact directory rather than a prefix.
 public enum HelperRequestValidation {
-    /// Apple Silicon and Intel Homebrew prefixes — must match
-    /// `DependencyChecker.knownHomebrewPrefixes`.
+    /// Apple Silicon and Intel Homebrew prefixes.
+    ///
+    /// The single definition in the package: `DependencyChecker` aliases this
+    /// rather than keeping its own copy. The two lists previously sat in
+    /// different files with a "must match" comment on each, which is a drift
+    /// waiting to happen — and drifting apart here means the checker can locate
+    /// a binary under a prefix the helper then refuses to run, i.e. mounts that
+    /// fail for a reason nothing in the UI can explain.
+    ///
+    /// (The helper's *plist name* is genuinely duplicated in
+    /// `DependencyChecker`, and has to be: that literal is shared with
+    /// `AppNTFSHelperProtocol`, which is compiled directly into the Xcode
+    /// targets and is not visible from this package.)
     static let allowedHomebrewPrefixes = ["/opt/homebrew", "/usr/local"]
 
     /// The only executables the helper will ever spawn (basename match). All
@@ -97,12 +108,19 @@ public enum HelperRequestValidation {
     }
 
     /// A single directory directly under `/Volumes/` (where macOS mounts
-    /// removable media). No nesting, no `..`, non-empty leaf.
+    /// removable media). No nesting, no `.`/`..`, non-empty leaf.
+    ///
+    /// The two dot forms are rejected explicitly because neither is caught by
+    /// the checks around them. `pathContainsTraversal` only looks for `..`, and
+    /// a lone `.` is non-empty and contains no `/` — so `/Volumes/.` satisfied
+    /// every other condition and resolved to `/Volumes` itself, which the
+    /// helper would then have mounted `ntfs-3g` over, as root. `..` is covered
+    /// twice over now, which is the right redundancy for a root-side check.
     public static func isValidMountPath(_ path: String) -> Bool {
         let prefix = "/Volumes/"
         guard path.hasPrefix(prefix), !pathContainsTraversal(path) else { return false }
         let leaf = String(path.dropFirst(prefix.count))
-        return !leaf.isEmpty && !leaf.contains("/")
+        return !leaf.isEmpty && !leaf.contains("/") && leaf != "." && leaf != ".."
     }
 
     /// Every comma-separated token is `key` or `key=value` with `key` in the

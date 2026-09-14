@@ -12,11 +12,13 @@ public actor MountManager {
     private let mountPointInspector: MountPointInspecting
     private let logger: AppLogger
 
-    /// `statfs` filesystem-type names that mean "mounted read-write via a FUSE
-    /// NTFS driver".
-    private static let fuseFileSystemTypes: Set<String> = [
-        "macfuse", "fuse", "osxfuse", "fuse-t", "ntfs-3g"
-    ]
+    /// `statfs` type names that mean "one of ours" without containing `fuse`.
+    ///
+    /// Just the one, and it earns its place: every other name the backends
+    /// produce (`macfuse`, `osxfuse`, `fuse-t`, and whatever the FSKit module
+    /// reports) is caught by the substring rule below, so enumerating them was
+    /// pure duplication of the check that follows.
+    private static let nonFuseNamedFileSystemTypes: Set<String> = ["ntfs-3g"]
 
     /// Whether a `statfs` type name is one of ours.
     ///
@@ -33,7 +35,7 @@ public actor MountManager {
     /// read-write. It doesn't: `ntfs` contains neither `fuse` nor `ntfs-3g`.
     static func isFuseFileSystemType(_ type: String) -> Bool {
         let normalized = type.lowercased()
-        return fuseFileSystemTypes.contains(normalized) || normalized.contains("fuse")
+        return normalized.contains("fuse") || nonFuseNamedFileSystemTypes.contains(normalized)
     }
 
     /// nil ⇒ falls back to mounting directly as the current user (only ever
@@ -93,6 +95,32 @@ public actor MountManager {
     @discardableResult
     public func attemptRemount(_ volume: NTFSVolume) async -> Result<NTFSVolume, MountError> {
         await attemptRemount(volume, repairDirtyFlag: false)
+    }
+
+    /// Confirms that a volume the app believes it mounted read-write still is,
+    /// and re-runs the pipeline when it isn't. `nil` means the mount is fine
+    /// and nothing was done.
+    ///
+    /// Waking from sleep is what this exists for. A FUSE mount can be gone
+    /// afterwards — the drive powered down, the userspace daemon died — while
+    /// DiskArbitration reports nothing at all: no `.appeared`, no
+    /// `.descriptionChanged`. Nothing in the event-driven path ever fires, so
+    /// the row goes on claiming read-write over a mountpoint that no longer
+    /// resolves, and the first write the user attempts is the thing that tells
+    /// them otherwise.
+    public func revalidateReadWriteMount(_ volume: NTFSVolume) async -> Result<NTFSVolume, MountError>? {
+        if let fileSystemType = mountPointInspector.fileSystemType(atPath: volume.mountPath),
+           Self.isFuseFileSystemType(fileSystemType) {
+            return nil
+        }
+        logger.warning("\(volume.bsdName) is no longer mounted read-write — re-running the pipeline")
+        // This volume has been through the pipeline once, so `handledByUs`
+        // holds it and the normal path would drop the attempt as a duplicate.
+        // The suppression exists to stop a failure loop driven by our own disk
+        // events; this call comes from a wake notification, not from one of
+        // those events, so it is not what that guard is protecting against.
+        handledByUs.remove(volume.bsdName)
+        return await attemptRemount(volume, repairDirtyFlag: false)
     }
 
     /// Runs `ntfsfix` to clear the Windows dirty/hibernation flag, then
@@ -223,10 +251,37 @@ public actor MountManager {
         }
 
         logger.error("every backend failed for \(volume.bsdName): \(lastError) — falling back to read-only")
+        let annotated = Self.namingFullDiskAccessIfUnverified(lastError, status: status)
         let fallbackSucceeded = await restoreReadOnly(volume)
         return .failure(fallbackSucceeded
-            ? .mountFailed(lastError)
-            : .mountFailedAndFallbackFailed(mountError: lastError, fallbackError: "diskutil mount also failed"))
+            ? .mountFailed(annotated)
+            : .mountFailedAndFallbackFailed(mountError: annotated, fallbackError: "diskutil mount also failed"))
+    }
+
+    /// Adds Full Disk Access to the list of suspects when the checker could not
+    /// rule it out.
+    ///
+    /// `fullDiskAccessGranted == nil` means the probe never ran — the helper
+    /// wasn't reachable to be asked — so the app genuinely does not know
+    /// whether the helper can open `/dev/rdisk*`. That is deliberately *not*
+    /// enough to raise the warning banner (see `DependencyStatus.isReady`),
+    /// because guessing wrong would send every user to System Settings for a
+    /// permission they already granted. Once a mount has actually failed the
+    /// balance flips: the unknown is now a live suspect and worth naming.
+    ///
+    /// It goes on its own line so `MountError.description` — which keeps only
+    /// the first line — stays a one-liner fit for a notification, and the hint
+    /// surfaces in the tooltip and the log alongside the full text.
+    private static func namingFullDiskAccessIfUnverified(
+        _ reason: String,
+        status: DependencyStatus
+    ) -> String {
+        guard status.fullDiskAccessGranted == nil else { return reason }
+        return """
+            \(reason)
+            No se pudo verificar el Acceso completo al disco del helper. Si el problema \
+            persiste, revisá Ajustes del Sistema → Privacidad y seguridad → Acceso completo al disco.
+            """
     }
 
     /// One mount attempt with one backend. `nil` means the volume really is
@@ -284,7 +339,19 @@ public actor MountManager {
     /// read-only mount back.
     @discardableResult
     private func restoreReadOnly(_ volume: NTFSVolume) async -> Bool {
-        (try? await diskUtil.mount(bsdName: volume.bsdName))?.succeeded ?? false
+        // Detached, so it does not inherit the caller's cancellation.
+        //
+        // Every call site reaches here *after* the native read-only mount has
+        // already been torn down, and one of the ways to get here is the user
+        // pressing cancel — which `ProcessRunner` implements by SIGTERMing the
+        // child. If this inherited that cancellation it would die on its first
+        // `diskutil` call and the volume would be left with no mount at all:
+        // cancelling a remount would be strictly worse than letting it fail.
+        let diskUtil = diskUtil
+        let bsdName = volume.bsdName
+        return await Task.detached {
+            (try? await diskUtil.mount(bsdName: bsdName))?.succeeded ?? false
+        }.value
     }
 
 }

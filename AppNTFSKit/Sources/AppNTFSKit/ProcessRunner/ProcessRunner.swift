@@ -54,10 +54,36 @@ public struct ProcessRunner: ProcessRunning {
     ) async throws -> ProcessResult {
         let handle = ProcessHandle(executable: executable, arguments: arguments)
 
-        return try await withThrowingTaskGroup(of: ProcessResult?.self) { group in
+        // Cancelling the calling task kills the child, rather than leaving an
+        // `ntfs-3g` or `diskutil` running unsupervised while nobody is left to
+        // read its result. This is what makes the UI's per-volume cancel
+        // button mean something: without it, "cancel" would only stop the app
+        // from *listening*. `MountManager.restoreReadOnly` is deliberately
+        // shielded from this so the read-only fallback still runs.
+        return try await withTaskCancellationHandler {
+            try await runToCompletion(handle, executable: executable, timeout: timeout)
+        } onCancel: {
+            handle.terminate()
+        }
+    }
+
+    private func runToCompletion(
+        _ handle: ProcessHandle,
+        executable: String,
+        timeout: Duration
+    ) async throws -> ProcessResult {
+        try await withThrowingTaskGroup(of: ProcessResult?.self) { group in
             group.addTask { try await handle.run() }
             group.addTask {
-                try? await Task.sleep(for: timeout)
+                do {
+                    try await Task.sleep(for: timeout)
+                } catch {
+                    // The sleep was cancelled, not elapsed. The enclosing
+                    // cancellation handler has already SIGTERMed the child, so
+                    // say so — reporting a cancellation as a 120 s timeout
+                    // would put a wrong diagnosis in the user's error row.
+                    throw CancellationError()
+                }
                 return nil
             }
             defer { group.cancelAll() }
@@ -111,24 +137,55 @@ private final class ProcessHandle: @unchecked Sendable {
 
             process.standardOutput = stdoutPipe
             process.standardError = stderrPipe
-            // Reading in the termination handler is safe: every command this
-            // app runs (diskutil, mount_ntfs-3g, brew, kmutil,
-            // systemextensionsctl, …) produces small text output well under
-            // the pipe's kernel buffer size — no write()-blocks-before-read
-            // deadlock.
+
+            // Both pipes are drained on their own queues, started *before* the
+            // process launches, rather than read from the termination handler
+            // once it has already exited.
+            //
+            // Reading after exit only works while the output fits in the pipe's
+            // kernel buffer (64 KiB): past that the child blocks in `write()`
+            // waiting for a reader that, by construction, will not read until
+            // the child exits. That deadlock resolves only when the 120 s
+            // timeout fires and SIGTERMs the process, and every command here
+            // spawns a third-party binary whose output volume is not ours to
+            // promise — `ntfs-3g` in particular can be arbitrarily chatty on
+            // stderr when a mount goes wrong, which is exactly the case that
+            // most needs its output captured.
+            let collector = OutputCollector()
+            let drained = DispatchGroup()
+            for (pipe, isStandardOutput) in [(stdoutPipe, true), (stderrPipe, false)] {
+                drained.enter()
+                DispatchQueue.global().async {
+                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                    collector.store(data, isStandardOutput: isStandardOutput)
+                    drained.leave()
+                }
+            }
+
+            // `notify` rather than `wait`: the termination handler runs on a
+            // queue owned by Process, and blocking it would stall every other
+            // process this app is waiting on. In practice both reads are
+            // already at EOF by now — the child exiting is what closed the
+            // write ends — so the notify fires immediately.
             process.terminationHandler = { finishedProcess in
-                let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-                let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-                continuation.resume(returning: ProcessResult(
-                    exitCode: finishedProcess.terminationStatus,
-                    standardOutput: String(data: stdoutData, encoding: .utf8) ?? "",
-                    standardError: String(data: stderrData, encoding: .utf8) ?? ""
-                ))
+                let exitCode = finishedProcess.terminationStatus
+                drained.notify(queue: DispatchQueue.global()) {
+                    continuation.resume(returning: ProcessResult(
+                        exitCode: exitCode,
+                        standardOutput: collector.standardOutput,
+                        standardError: collector.standardError
+                    ))
+                }
             }
 
             do {
                 try process.run()
             } catch {
+                // Nothing was spawned, so nothing will ever close the write
+                // ends — without this the two drain tasks block on
+                // `readDataToEndOfFile` for the lifetime of the process.
+                try? stdoutPipe.fileHandleForWriting.close()
+                try? stderrPipe.fileHandleForWriting.close()
                 continuation.resume(throwing: error)
             }
         }
@@ -143,9 +200,54 @@ private final class ProcessHandle: @unchecked Sendable {
         // Escalate to SIGKILL if it's still there a few seconds later — a
         // FUSE-deadlocked `ntfs-3g` can ignore SIGTERM, and the task group
         // that spawned us won't finish draining until this process is gone.
-        let pid = process.processIdentifier
-        DispatchQueue.global().asyncAfter(deadline: .now() + 3) {
-            kill(pid, SIGKILL)
+        //
+        // The liveness re-check is not optional. Capturing the pid and killing
+        // it unconditionally three seconds later targets whatever holds that
+        // pid *at that moment*: if the SIGTERM worked (the overwhelming
+        // majority of the time) the pid is free to be recycled, and this would
+        // signal an unrelated process. `HelperService` runs this same code as
+        // root, so the unrelated process could be anything on the machine.
+        // `Process.isRunning` answers from the state Foundation already reaped,
+        // so consulting it under the lock closes the window rather than
+        // narrowing it.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 3) { [self] in
+            lock.lock()
+            defer { lock.unlock() }
+            guard process.isRunning else { return }
+            kill(process.processIdentifier, SIGKILL)
         }
+    }
+}
+
+/// Accumulates the two pipe drains started by `ProcessHandle.run()`.
+///
+/// `@unchecked Sendable`: the two writers touch disjoint fields and the reader
+/// only runs after both have left the `DispatchGroup`, but the lock makes that
+/// ordering argument unnecessary rather than load-bearing.
+private final class OutputCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stdoutData = Data()
+    private var stderrData = Data()
+
+    func store(_ data: Data, isStandardOutput: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        if isStandardOutput {
+            stdoutData = data
+        } else {
+            stderrData = data
+        }
+    }
+
+    var standardOutput: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return String(data: stdoutData, encoding: .utf8) ?? ""
+    }
+
+    var standardError: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return String(data: stderrData, encoding: .utf8) ?? ""
     }
 }

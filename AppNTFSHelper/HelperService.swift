@@ -67,7 +67,17 @@ final class HelperService: NSObject, AppNTFSHelperProtocol, @unchecked Sendable 
             return
         }
         Task {
-            let createdDirectory = (try? createMountPointIfNeeded(mountPath)) ?? false
+            // Not `try?`: a mountpoint that couldn't be prepared used to be
+            // swallowed into `false`, and ntfs-3g was then pointed at a path
+            // that doesn't exist — or, worse, at a symlink. The reason the
+            // directory couldn't be made is the answer the caller needs.
+            let createdDirectory: Bool
+            do {
+                createdDirectory = try createMountPointIfNeeded(mountPath)
+            } catch {
+                reply(HelperOperationResult(exitCode: -1, standardOutput: "", standardError: "\(error)"))
+                return
+            }
 
             do {
                 let result = try await runner.run(
@@ -146,9 +156,37 @@ final class HelperService: NSObject, AppNTFSHelperProtocol, @unchecked Sendable 
 
     /// Returns whether this call is the one that created the directory — a
     /// pre-existing directory is left alone on failure either way.
+    ///
+    /// `lstat`, not `FileManager.fileExists(atPath:)`: that one resolves
+    /// symlinks, so a symlink sitting at `/Volumes/<name>` reads as "already
+    /// there, nothing to do" and the mount lands on whatever it points at.
+    /// This process is root, which makes that the difference between mounting
+    /// on a mountpoint and mounting over a system directory. The path is
+    /// already constrained to a single leaf under `/Volumes` by
+    /// `HelperRequestValidation.isValidMountPath`; this closes the remaining
+    /// gap, where the leaf exists but isn't what it claims to be.
     private func createMountPointIfNeeded(_ path: String) throws -> Bool {
-        guard !fileManager.fileExists(atPath: path) else { return false }
-        try fileManager.createDirectory(atPath: path, withIntermediateDirectories: true)
-        return true
+        var info = stat()
+        guard lstat(path, &info) == 0 else {
+            // Nothing there (or unreadable) — let `createDirectory` decide,
+            // and report whatever it says if it can't.
+            try fileManager.createDirectory(atPath: path, withIntermediateDirectories: true)
+            return true
+        }
+        guard (info.st_mode & S_IFMT) == S_IFDIR else {
+            throw MountPointError.notADirectory(path)
+        }
+        return false
+    }
+
+    private enum MountPointError: Error, CustomStringConvertible {
+        case notADirectory(String)
+
+        var description: String {
+            switch self {
+            case .notADirectory(let path):
+                return "AppNTFSHelper rejected the request: \(path) already exists and is not a directory"
+            }
+        }
     }
 }

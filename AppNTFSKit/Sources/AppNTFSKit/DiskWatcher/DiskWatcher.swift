@@ -51,6 +51,12 @@ public final class DiskWatcher: @unchecked Sendable {
         guard let session else { return }
         DASessionSetDispatchQueue(session, nil)
         self.session = nil
+        // Terminate the stream too, so a `for await` over `events` ends on its
+        // own. `AppCoordinator` happens to cancel its watch task before calling
+        // this, which hid the omission — but that made the shutdown order
+        // load-bearing and undocumented, and any other consumer (including a
+        // test) would simply hang here forever.
+        continuation.finish()
     }
 
     private func handleDisk(_ disk: DADisk, isInitialAppearance: Bool) {
