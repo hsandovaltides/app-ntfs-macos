@@ -4,8 +4,8 @@ cask "appntfs" do
   # real version `brew upgrade` has no way to tell an outdated install from a
   # current one, and without a checksum Homebrew installs whatever bytes the
   # download produced.
-  version "0.1.7"
-  sha256 "fcce37f30d6317d7d0ce335c7d132980b878ec8e32650c806256d300a23ed232"
+  version "0.1.8"
+  sha256 "0ae094e5f24b8cf472b624c294a88f0fb69f59a9e4ad03376c44d455814298bd"
 
   url "https://github.com/hsandovaltides/app-ntfs-macos/releases/download/v#{version}/AppNTFS.zip"
   name "AppNTFS"
