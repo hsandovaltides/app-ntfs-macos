@@ -17,7 +17,7 @@ cask "appntfs" do
     strategy :github_latest
   end
 
-  depends_on macos: ">= :sequoia"
+  depends_on macos: :sequoia
   depends_on cask: "macfuse"
 
   app "AppNTFS.app"
@@ -26,7 +26,7 @@ cask "appntfs" do
   # see the project's README). This clears the quarantine flag so it opens
   # without the "unidentified developer" prompt; it's still the real signed
   # binary from the release, not a bypass of code-signature verification.
-  postflight do
+  postflight_steps do
     system_command "/usr/bin/xattr",
                     args: ["-dr", "com.apple.quarantine", "#{appdir}/AppNTFS.app"],
                     sudo: false
